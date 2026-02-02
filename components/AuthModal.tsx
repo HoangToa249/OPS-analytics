@@ -9,7 +9,7 @@ interface AuthModalProps {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onSuccess }) => {
-  const [email, setEmail] = useState('hoang.toan2409@gmail.com');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -39,7 +39,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onSuccess }
       console.log('[Auth] ✅ Login successful!');
       console.log('[Auth] User ID:', data.user?.id);
       
-      setEmail('hoang.toan2409@gmail.com');
+      setEmail('');
       setPassword('');
       
       // Wait a bit for session to settle
@@ -77,14 +77,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onSuccess }
         return;
       }
 
-      console.log('[Auth] ✅ Signup successful!');
-      setError('');
+      console.log('[Auth] ✅ Signup successful! User ID:', data.user?.id);
+
+      // Auto-login after signup
+      console.log('[Auth] Auto-logging in new user...');
+      const { data: loginData, error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (signInError) {
+        console.error('[Auth] Auto-login failed:', signInError.message);
+        setError('Account created! Please login with your credentials.');
+        setMode('login');
+        setEmail('');
+        setPassword('');
+        return;
+      }
+
+      console.log('[Auth] ✅ Auto-login successful! User ID:', loginData.user?.id);
+      
       setEmail('');
       setPassword('');
       
-      // Switch to login
-      setMode('login');
-      setError('Account created! Please login with your credentials.');
+      // Wait a bit for session to settle
+      await new Promise(r => setTimeout(r, 500));
+      
+      onClose();
+      onSuccess?.();
     } catch (err) {
       console.error('[Auth] Exception:', err);
       setError(err instanceof Error ? err.message : 'Signup failed');
@@ -139,7 +159,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onSuccess }
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="hoang.toan2409@gmail.com"
+              placeholder="Enter your email"
               className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 transition-all"
               required
               disabled={loading}
@@ -155,7 +175,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ show, onClose, onSuccess }
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={mode === 'login' ? 'Toan@1992' : 'Enter password'}
+              placeholder="Enter password"
               className="w-full px-4 py-2 bg-slate-700/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 transition-all"
               required
               disabled={loading}

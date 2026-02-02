@@ -64,7 +64,7 @@ export const toISOLocal = (d: Date): string => {
 
 export const fmtTime = (d: Date): string => {
   if(!d || isNaN(d.getTime())) return '--:--';
-  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 };
 
 export const pad2 = (n: number) => String(n).padStart(2, '0');

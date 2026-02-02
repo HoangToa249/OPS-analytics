@@ -144,39 +144,51 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       }
     }
 
-    // Arrival Stand - should occupy from ATA to STA (actual to scheduled departure)
+    // FIXED: Stand occupancy - handle both arrStand and depStand
+    // Case 1: Paired flight (arrStand === depStand) → occupancy from STA to STD
+    // Case 2: Separate stands → arrStand: ATA to STA, depStand: STD to ATD
+    
+    // Arrival Stand
     if (flight.arrStand) {
       if (!standArrMap.has(flight.arrStand)) standArrMap.set(flight.arrStand, []);
       standArrMap.get(flight.arrStand)!.push(flight);
 
-      // Use ATA to STD (when next departure is scheduled) or ATA to ATD (when actually departs)
-      const standStart = flight.ata;
-      const standEnd = flight.atd || flight.std;
+      let standStart: Date | null = null;
+      let standEnd: Date | null = null;
+      
+      // Check if this is a paired flight (arrStand === depStand and both std and sta exist)
+      const isPaired = flight.arrStand === flight.depStand && flight.std;
+      
+      if (isPaired) {
+        // Paired: occupancy from arrival (STA/ATA) to departure (STD)
+        standStart = flight.sta || flight.ata;
+        standEnd = flight.std;
+      } else {
+        // Arrival only: occupancy from arrival (ATA/STA) to departure (ATD)
+        standStart = flight.ata || flight.sta;
+        standEnd = flight.atd;
+      }
       
       if (standStart && standEnd) {
-        // Only count occupied minutes within the same hour - don't accumulate across hours
         const utilMin = getMinutesBetween(standStart, standEnd);
         const hour = getHourFromDate(standStart);
-        
-        // Cap at 60 minutes max per hour (overlap handling)
         const occupiedThisHour = Math.min(utilMin, 60);
         hourlyMetrics[hour].standOccupancy[flight.arrStand] = (hourlyMetrics[hour].standOccupancy[flight.arrStand] || 0) + occupiedThisHour;
       }
     }
 
-    // Departure Stand - should occupy from STD to ATD
-    if (flight.depStand && flight.depStand !== flight.arrStand) {  // Avoid duplicate if same stand
+    // Departure Stand (only if different from arrStand)
+    if (flight.depStand && flight.depStand !== flight.arrStand) {
       if (!standDepMap.has(flight.depStand)) standDepMap.set(flight.depStand, []);
       standDepMap.get(flight.depStand)!.push(flight);
 
+      // Departure only: occupancy from STD to ATD
       const standStart = flight.std;
       const standEnd = flight.atd;
       
       if (standStart && standEnd) {
         const utilMin = getMinutesBetween(standStart, standEnd);
         const hour = getHourFromDate(standStart);
-        
-        // Cap at 60 minutes max per hour (overlap handling)
         const occupiedThisHour = Math.min(utilMin, 60);
         hourlyMetrics[hour].standOccupancy[flight.depStand] = (hourlyMetrics[hour].standOccupancy[flight.depStand] || 0) + occupiedThisHour;
       }
@@ -208,11 +220,20 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     }
   }
 
-  for (const [standId, standFlights] of [...standArrMap.entries(), ...standDepMap.entries()]) {
+  // FIXED: Stand conflict detection - use proper stand occupancy times, not gate times
+  for (const [standId, standFlights] of standArrMap.entries()) {
     for (let i = 0; i < standFlights.length; i++) {
       for (let j = i + 1; j < standFlights.length; j++) {
-        if (detectTimeConflict(standFlights[i].gateStart, standFlights[i].gateEnd, standFlights[j].gateStart, standFlights[j].gateEnd)) {
-          const hour = getHourFromDate(standFlights[i].gateStart);
+        const flight1 = standFlights[i];
+        const flight2 = standFlights[j];
+        // Stand occupancy: STA/ATA to STD (arrival to departure of same pair)
+        const flight1Start = flight1.sta || flight1.ata;
+        const flight1End = flight1.std;
+        const flight2Start = flight2.sta || flight2.ata;
+        const flight2End = flight2.std;
+        
+        if (detectTimeConflict(flight1Start, flight1End, flight2Start, flight2End)) {
+          const hour = getHourFromDate(flight1Start);
           if (hour >= 0 && hour < 24) {
             hourlyMetrics[hour].standConflicts++;
           }
@@ -264,32 +285,96 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     };
   });
 
-  // Calculate Stand Stats
-  const allStandFlights = [...standArrMap.entries(), ...standDepMap.entries()];
-  const standStats: StandStat[] = allStandFlights.map(([standId, standFlights]) => {
-    const utilizationTimes = standFlights.map(f => getMinutesBetween(f.gateStart, f.gateEnd));
+  // Calculate Stand Stats - process both arrival and departure maps
+  const allStandMaps = new Map<string, Flight[]>();
+  
+  // Merge both maps
+  for (const [standId, flights] of standArrMap) {
+    allStandMaps.set(standId, flights);
+  }
+  for (const [standId, flights] of standDepMap) {
+    if (allStandMaps.has(standId)) {
+      // Already exists from arrStand, merge flights
+      allStandMaps.get(standId)!.push(...flights);
+    } else {
+      allStandMaps.set(standId, flights);
+    }
+  }
+
+  const standStats: StandStat[] = Array.from(allStandMaps.entries()).map(([standId, allFlights]) => {
+    // Calculate utilization - need to recalculate using correct occupancy times
+    const utilizationTimes = allFlights.map(f => {
+      const isPaired = f.arrStand === f.depStand && f.std;
+      let start: Date | null = null;
+      let end: Date | null = null;
+      
+      if (f.arrStand === standId) {
+        // Arrival stand occupancy
+        if (isPaired) {
+          start = f.sta || f.ata;
+          end = f.std;
+        } else {
+          start = f.ata || f.sta;
+          end = f.atd;
+        }
+      } else if (f.depStand === standId) {
+        // Departure stand occupancy
+        start = f.std;
+        end = f.atd;
+      }
+      
+      return getMinutesBetween(start, end);
+    });
+    
     const totalUtilMin = utilizationTimes.reduce((a, b) => a + b, 0);
     const avgUtilMin = utilizationTimes.length > 0 ? totalUtilMin / utilizationTimes.length : 0;
 
-    // Calculate turnaround time
-    const sortedFlights = [...standFlights].sort((a, b) => (a.gateEnd?.getTime() || 0) - (b.gateEnd?.getTime() || 0));
+    // Calculate turnaround time - gap between consecutive flights at same stand
+    const sortedFlights = [...allFlights].sort((a, b) => {
+      const aEnd = a.depStand === standId ? a.atd : a.std;
+      const bEnd = b.depStand === standId ? b.atd : b.std;
+      return (aEnd?.getTime() || 0) - (bEnd?.getTime() || 0);
+    });
+    
     const turnaroundTimes: number[] = [];
     for (let i = 0; i < sortedFlights.length - 1; i++) {
-      const gap = getMinutesBetween(sortedFlights[i].gateEnd, sortedFlights[i + 1].gateStart);
+      const flight1 = sortedFlights[i];
+      const flight2 = sortedFlights[i + 1];
+      
+      // End time of flight 1 at this stand
+      let flight1End: Date | null = null;
+      if (flight1.arrStand === standId) {
+        flight1End = flight1.atd || flight1.std;
+      } else if (flight1.depStand === standId) {
+        flight1End = flight1.atd;
+      }
+      
+      // Start time of flight 2 at this stand
+      let flight2Start: Date | null = null;
+      if (flight2.arrStand === standId) {
+        flight2Start = flight2.sta || flight2.ata;
+      } else if (flight2.depStand === standId) {
+        flight2Start = flight2.std;
+      }
+      
+      const gap = getMinutesBetween(flight1End, flight2Start);
       if (gap >= 0) turnaroundTimes.push(gap);
     }
     const avgTurnaroundMin = turnaroundTimes.length > 0 ? turnaroundTimes.reduce((a, b) => a + b, 0) / turnaroundTimes.length : 0;
 
     // Determine stand type
-    const hasArr = standFlights.some(f => f.arrStand === standId);
-    const hasDep = standFlights.some(f => f.depStand === standId);
+    const hasArr = allFlights.some(f => f.arrStand === standId);
+    const hasDep = allFlights.some(f => f.depStand === standId);
     const standType: 'arr' | 'dep' | 'mixed' = hasArr && hasDep ? 'mixed' : hasArr ? 'arr' : 'dep';
 
     // Peak hour
     let peakHour = 0;
     let maxFlights = 0;
     for (let h = 0; h < 24; h++) {
-      const hourFlights = standFlights.filter(f => getHourFromDate(f.gateStart) === h).length;
+      const hourFlights = allFlights.filter(f => {
+        const hour = f.arrStand === standId ? getHourFromDate(f.sta || f.ata) : getHourFromDate(f.std);
+        return hour === h;
+      }).length;
       if (hourFlights > maxFlights) {
         maxFlights = hourFlights;
         peakHour = h;
@@ -298,9 +383,36 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
 
     // Count conflicts
     let conflicts = 0;
-    for (let i = 0; i < standFlights.length; i++) {
-      for (let j = i + 1; j < standFlights.length; j++) {
-        if (detectTimeConflict(standFlights[i].gateStart, standFlights[i].gateEnd, standFlights[j].gateStart, standFlights[j].gateEnd)) {
+    for (let i = 0; i < allFlights.length; i++) {
+      for (let j = i + 1; j < allFlights.length; j++) {
+        const flight1 = allFlights[i];
+        const flight2 = allFlights[j];
+        
+        // Get occupancy times for flight1 at standId
+        let flight1Start: Date | null = null;
+        let flight1End: Date | null = null;
+        if (flight1.arrStand === standId) {
+          const isPaired = flight1.arrStand === flight1.depStand && flight1.std;
+          flight1Start = flight1.sta || flight1.ata;
+          flight1End = isPaired ? flight1.std : flight1.atd;
+        } else if (flight1.depStand === standId) {
+          flight1Start = flight1.std;
+          flight1End = flight1.atd;
+        }
+        
+        // Get occupancy times for flight2 at standId
+        let flight2Start: Date | null = null;
+        let flight2End: Date | null = null;
+        if (flight2.arrStand === standId) {
+          const isPaired = flight2.arrStand === flight2.depStand && flight2.std;
+          flight2Start = flight2.sta || flight2.ata;
+          flight2End = isPaired ? flight2.std : flight2.atd;
+        } else if (flight2.depStand === standId) {
+          flight2Start = flight2.std;
+          flight2End = flight2.atd;
+        }
+        
+        if (detectTimeConflict(flight1Start, flight1End, flight2Start, flight2End)) {
           conflicts++;
         }
       }
@@ -311,7 +423,7 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
 
     return {
       standId,
-      totalFlights: standFlights.length,
+      totalFlights: allFlights.length,
       totalUtilizationMin: totalUtilMin,
       avgUtilizationMin: avgUtilMin,
       avgTurnaroundMin,

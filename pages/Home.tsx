@@ -1,23 +1,66 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Gamepad2, BarChart3, Cloud, HardDrive, X, LogIn } from 'lucide-react';
+import { Gamepad2, BarChart3, Cloud, HardDrive, X, LogIn, Database, Zap, Shield } from 'lucide-react';
 import { AuthModal } from '../components/AuthModal';
+import RoleManagerModal from '../components/RoleManagerModal';
+import { isAdmin } from '../utils/permissionUtils';
 import { supabase } from '../supabaseClient';
 
 const Home: React.FC = () => {
   const navigate = useNavigate();
   const [dispatchSourceModal, setDispatchSourceModal] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [roleManagerOpen, setRoleManagerOpen] = useState(false);
   const [user, setUser] = useState<any>(null);
+  const [isUserAdmin, setIsUserAdmin] = useState(false);
 
   // Check if user is logged in
-  React.useEffect(() => {
+  useEffect(() => {
     const checkUser = async () => {
       const { data: { user: currentUser } } = await supabase.auth.getUser();
+      console.log('[Home] Current user:', currentUser?.email);
       setUser(currentUser);
+      
+      // Check if user is admin
+      if (currentUser) {
+        try {
+          const admin = await isAdmin();
+          console.log('[Home] isAdmin result:', admin);
+          setIsUserAdmin(admin);
+        } catch (error) {
+          console.error('[Home] Error checking admin status:', error);
+          setIsUserAdmin(false);
+        }
+      } else {
+        setIsUserAdmin(false);
+      }
     };
+    
     checkUser();
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('[Home] Auth event:', event, 'Session:', session?.user?.email);
+      setUser(session?.user || null);
+      
+      // Check admin status when user changes
+      if (session?.user) {
+        isAdmin().then(admin => {
+          console.log('[Home] Admin status updated:', admin);
+          setIsUserAdmin(admin);
+        }).catch(err => {
+          console.error('[Home] Error checking admin status:', err);
+          setIsUserAdmin(false);
+        });
+      } else {
+        setIsUserAdmin(false);
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
   }, []);
 
   const handleDispatchChoice = (source: 'cloud' | 'local') => {
@@ -27,8 +70,18 @@ const Home: React.FC = () => {
 
   return (
     <div className="relative h-screen w-full flex flex-col items-center justify-center overflow-hidden bg-slate-900 text-white">
-      {/* Top Right Auth Button */}
-      <div className="absolute top-8 right-8 z-20">
+      {/* Top Right Auth Button + Role Manager */}
+      <div className="absolute top-8 right-8 z-20 flex gap-3 items-center">
+        {isUserAdmin && (
+          <button
+            onClick={() => setRoleManagerOpen(true)}
+            className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg font-medium transition-colors"
+            title="Manage Roles & Permissions"
+          >
+            <Shield size={18} />
+            Manage Roles
+          </button>
+        )}
         <button
           onClick={() => setShowAuthModal(true)}
           className="flex items-center gap-2 bg-sky-600 hover:bg-sky-700 px-4 py-2 rounded-lg font-medium transition-colors"
@@ -46,10 +99,17 @@ const Home: React.FC = () => {
           const checkUser = async () => {
             const { data: { user: currentUser } } = await supabase.auth.getUser();
             setUser(currentUser);
+            if (currentUser) {
+              const admin = await isAdmin();
+              setIsUserAdmin(admin);
+            }
           };
           checkUser();
         }}
       />
+
+      {/* Role Manager Modal */}
+      {roleManagerOpen && <RoleManagerModal isOpen={roleManagerOpen} onClose={() => setRoleManagerOpen(false)} />}
 
       {/* Background */}
       <div 
@@ -67,7 +127,7 @@ const Home: React.FC = () => {
           Ground Handling Management & Data Analytics System
         </p>
 
-        <div className="flex flex-col md:flex-row gap-8 justify-center">
+        <div className="flex flex-col md:flex-row gap-8 justify-center flex-wrap">
           <div 
             onClick={() => setDispatchSourceModal(true)}
             className="group w-72 bg-white/5 backdrop-blur-md border border-white/10 p-10 rounded-3xl cursor-pointer transition-all duration-300 hover:-translate-y-2 hover:bg-white/10 hover:border-sky-400 hover:shadow-2xl hover:shadow-sky-500/20"
@@ -87,6 +147,28 @@ const Home: React.FC = () => {
             <span className="block text-2xl font-bold mb-2">Analytics</span>
             <span className="block text-sm text-slate-400 leading-relaxed">
               Operational Reports, Delay Analysis,<br/>Load Factors & Market Share.
+            </span>
+          </div>
+
+          <div 
+            onClick={() => navigate('/data-table')}
+            className="group w-72 bg-white/5 backdrop-blur-md border border-white/10 p-10 rounded-3xl cursor-pointer transition-all duration-300 hover:-translate-y-2 hover:bg-white/10 hover:border-orange-400 hover:shadow-2xl hover:shadow-orange-500/20"
+          >
+            <Database className="w-16 h-16 mx-auto mb-6 text-slate-300 group-hover:text-orange-400 transition-colors" />
+            <span className="block text-2xl font-bold mb-2">Data Table</span>
+            <span className="block text-sm text-slate-400 leading-relaxed">
+              View & Export Flight Data,<br/>Custom Filters & Columns.
+            </span>
+          </div>
+
+          <div 
+            onClick={() => navigate('/data-sync')}
+            className="group w-72 bg-white/5 backdrop-blur-md border border-white/10 p-10 rounded-3xl cursor-pointer transition-all duration-300 hover:-translate-y-2 hover:bg-white/10 hover:border-purple-400 hover:shadow-2xl hover:shadow-purple-500/20"
+          >
+            <Zap className="w-16 h-16 mx-auto mb-6 text-slate-300 group-hover:text-purple-400 transition-colors" />
+            <span className="block text-2xl font-bold mb-2">Data Sync</span>
+            <span className="block text-sm text-slate-400 leading-relaxed">
+              Connect External Databases,<br/>Hourly Auto Sync & Real-time Monitoring.
             </span>
           </div>
         </div>

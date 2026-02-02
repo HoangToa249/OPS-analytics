@@ -3,6 +3,8 @@ import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { FileSpreadsheet, ArrowRight, TableProperties, CheckCircle, AlertCircle, Eye, Zap, BarChart3, TrendingUp } from 'lucide-react';
 import { autoDetectMapping, validateMappedData, getSampleDataPreview, getColumnStats } from '../utils/columnMappingService';
+import TimeRangeSelector from './TimeRangeSelector';
+import ColumnSelector from './ColumnSelector';
 
 interface FileUploadProps {
   title: string;
@@ -10,6 +12,8 @@ interface FileUploadProps {
   onDataReady: (data: any[], headers: string[], mappings: Record<string, number>, config: any) => void;
   extraConfig?: React.ReactNode;
 }
+
+type ImportMode = 'upsert' | 'update' | 'insert';
 
 const FileUpload: React.FC<FileUploadProps> = ({ title, mappings, onDataReady, extraConfig }) => {
   const [headers, setHeaders] = useState<string[]>([]);
@@ -19,10 +23,21 @@ const FileUpload: React.FC<FileUploadProps> = ({ title, mappings, onDataReady, e
   const [fileName, setFileName] = useState('');
   const [mappingConfidence, setMappingConfidence] = useState<Record<string, number>>({});
   const [showPreview, setShowPreview] = useState(false);
+  const [showTestPreview, setShowTestPreview] = useState(false);
+  const [testPreviewData, setTestPreviewData] = useState<any>(null);
 
   // Config State
   const [fixTz, setFixTz] = useState(true);
   const [dateFmt, setDateFmt] = useState('auto');
+  const [importMode, setImportMode] = useState<ImportMode>('upsert');
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Time Range & Advanced Options
+  const [enableTimeRange, setEnableTimeRange] = useState(false);
+  const [timeRangeFrom, setTimeRangeFrom] = useState<Date | null>(null);
+  const [timeRangeTo, setTimeRangeTo] = useState<Date | null>(null);
+  const [deleteExisting, setDeleteExisting] = useState(false);
+  const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -75,7 +90,34 @@ const FileUpload: React.FC<FileUploadProps> = ({ title, mappings, onDataReady, e
     return getColumnStats(headers, rawData);
   }, [headers, rawData]);
 
+  const handleTest = () => {
+    // Validate before test
+    if (!validationResult || !validationResult.isValid) {
+      alert(`❌ Data validation failed:\n${validationResult?.errors.join('\n')}`);
+      return;
+    }
+    
+    if (missingRequired()) { 
+      alert('Please map all required fields before testing.'); 
+      return; 
+    }
+    
+    // Show preview modal with mode info
+    setTestPreviewData({
+      mode: importMode,
+      validRows: validationResult.stats.validRows,
+      totalRows: validationResult.stats.totalRows,
+      rowsToImport: validationResult.stats.totalRows - 1
+    });
+    setShowTestPreview(true);
+  };
+
   const handleProcess = () => {
+    // Prevent double click
+    if (isProcessing) {
+      return;
+    }
+
     // Validate before processing
     if (!validationResult || !validationResult.isValid) {
       alert(`❌ Data validation failed:\n${validationResult?.errors.join('\n')}`);
@@ -86,9 +128,36 @@ const FileUpload: React.FC<FileUploadProps> = ({ title, mappings, onDataReady, e
       alert('Please map all required fields before launching.'); 
       return; 
     }
+
+    // Validate time range if enabled
+    if (enableTimeRange && (!timeRangeFrom || !timeRangeTo)) {
+      alert('Please specify both start and end dates/times for time range filter.');
+      return;
+    }
+
+    // Validate time range order if enabled
+    if (enableTimeRange && timeRangeFrom && timeRangeTo && timeRangeFrom > timeRangeTo) {
+      alert('From date/time must be before or equal to To date/time.');
+      return;
+    }
+
+    setIsProcessing(true);
+    console.log('[FileUpload] Starting import process...');
     
     // Directly send mapped data to parent for parsing/processing
-    onDataReady(rawData, headers, selectedMap, { fixTz, dateFmt });
+    onDataReady(rawData, headers, selectedMap, { 
+      fixTz, 
+      dateFmt, 
+      importMode,
+      enableTimeRange,
+      timeRangeFrom: enableTimeRange && timeRangeFrom ? timeRangeFrom.toISOString() : null,
+      timeRangeTo: enableTimeRange && timeRangeTo ? timeRangeTo.toISOString() : null,
+      deleteExisting: enableTimeRange && deleteExisting,
+      selectedColumns: selectedColumns.length > 0 ? selectedColumns : undefined
+    });
+
+    // Reset after a delay
+    setTimeout(() => setIsProcessing(false), 2000);
   };
 
   if (step === 1) {
@@ -265,6 +334,64 @@ const FileUpload: React.FC<FileUploadProps> = ({ title, mappings, onDataReady, e
               </div>
             )}
 
+            {/* Import Mode Selector */}
+            <div className="bg-amber-50 p-5 rounded-xl border border-amber-200 shadow-sm">
+                <label className="block text-xs font-bold text-amber-800 uppercase mb-3 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                  Import Mode
+                </label>
+                
+                <div className="space-y-3">
+                    <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-amber-100 cursor-pointer hover:bg-amber-50" 
+                         onClick={() => setImportMode('upsert')}>
+                         <input 
+                            type="radio" 
+                            id="mode-upsert"
+                            name="importMode"
+                            checked={importMode === 'upsert'}
+                            onChange={() => setImportMode('upsert')}
+                            className="mt-1 w-4 h-4 rounded-full text-amber-600 focus:ring-amber-500 border-gray-300" 
+                         />
+                         <div className="flex-1">
+                           <label htmlFor="mode-upsert" className="text-sm font-bold text-slate-800 block cursor-pointer">Smart Upsert (Default)</label>
+                           <p className="text-xs text-slate-600 mt-0.5">Update existing records, insert new ones. Best for regular syncs.</p>
+                         </div>
+                    </div>
+
+                    <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-amber-100 cursor-pointer hover:bg-amber-50"
+                         onClick={() => setImportMode('update')}>
+                         <input 
+                            type="radio" 
+                            id="mode-update"
+                            name="importMode"
+                            checked={importMode === 'update'}
+                            onChange={() => setImportMode('update')}
+                            className="mt-1 w-4 h-4 rounded-full text-amber-600 focus:ring-amber-500 border-gray-300" 
+                         />
+                         <div className="flex-1">
+                           <label htmlFor="mode-update" className="text-sm font-bold text-slate-800 block cursor-pointer">Update Only</label>
+                           <p className="text-xs text-slate-600 mt-0.5">Update existing records only. Skip new records.</p>
+                         </div>
+                    </div>
+
+                    <div className="flex items-start gap-3 p-3 bg-white rounded-lg border border-amber-100 cursor-pointer hover:bg-amber-50"
+                         onClick={() => setImportMode('insert')}>
+                         <input 
+                            type="radio" 
+                            id="mode-insert"
+                            name="importMode"
+                            checked={importMode === 'insert'}
+                            onChange={() => setImportMode('insert')}
+                            className="mt-1 w-4 h-4 rounded-full text-amber-600 focus:ring-amber-500 border-gray-300" 
+                         />
+                         <div className="flex-1">
+                           <label htmlFor="mode-insert" className="text-sm font-bold text-slate-800 block cursor-pointer">Insert Only</label>
+                           <p className="text-xs text-slate-600 mt-0.5">Insert new records only. Skip existing records.</p>
+                         </div>
+                    </div>
+                </div>
+            </div>
+
             <div className="bg-blue-50 p-5 rounded-xl border border-blue-100 shadow-sm">
                 <label className="block text-xs font-bold text-blue-800 uppercase mb-3 flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-blue-500"></span>
@@ -314,23 +441,58 @@ const FileUpload: React.FC<FileUploadProps> = ({ title, mappings, onDataReady, e
 
             {extraConfig}
 
-            <div>
+            {/* Time Range & Field Selection Section */}
+            <TimeRangeSelector
+              enabled={enableTimeRange}
+              onEnabledChange={setEnableTimeRange}
+              fromDate={timeRangeFrom}
+              toDate={timeRangeTo}
+              onFromDateChange={setTimeRangeFrom}
+              onToDateChange={setTimeRangeTo}
+              deleteExisting={deleteExisting}
+              onDeleteExistingChange={setDeleteExisting}
+              isLoading={false}
+            />
+
+            {/* Column Selection Section */}
+            <ColumnSelector
+              availableColumns={mappings.map(m => ({ key: m.key, label: m.label }))}
+              selectedColumns={new Set(selectedColumns)}
+              onSelectionChange={(selected) => setSelectedColumns(Array.from(selected))}
+              isLoading={false}
+            />
+
+            <div className="space-y-3">
               {missingRequired() && (
-                <div className="mb-3 text-sm text-red-600 bg-red-50 p-2 rounded border border-red-100">Please map required fields `flight` and `std` (highlighted in red) before launching.</div>
+                <div className="text-sm text-red-600 bg-red-50 p-2 rounded border border-red-100">Please map required fields `flight` and `std` (highlighted in red) before launching.</div>
               )}
               {!validationResult?.isValid && (
-                <div className="mb-3 text-sm text-red-600 bg-red-50 p-2 rounded border border-red-100">Fix validation errors above before proceeding.</div>
+                <div className="text-sm text-red-600 bg-red-50 p-2 rounded border border-red-100">Fix validation errors above before proceeding.</div>
               )}
+              
               <button 
-                onClick={handleProcess} 
+                onClick={handleTest}
                 disabled={missingRequired() || !validationResult?.isValid}
                 className={`w-full ${
                   (missingRequired() || !validationResult?.isValid)
                     ? 'bg-slate-300 text-slate-600 cursor-not-allowed' 
+                    : 'bg-blue-600 hover:bg-blue-700 text-white'
+                } font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 shadow-lg hover:shadow-blue-600/30 transition-all`}
+              >
+                  <Eye size={18} />
+                  <span>Test & Preview</span>
+              </button>
+
+              <button 
+                onClick={handleProcess} 
+                disabled={missingRequired() || !validationResult?.isValid || isProcessing}
+                className={`w-full ${
+                  (missingRequired() || !validationResult?.isValid || isProcessing)
+                    ? 'bg-slate-300 text-slate-600 cursor-not-allowed' 
                     : 'bg-slate-900 hover:bg-black text-white'
                 } font-bold py-4 px-6 rounded-xl flex items-center justify-center gap-3 shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all`}
               >
-                  <span>Launch Dashboard</span>
+                  <span>Launch Import</span>
                   <ArrowRight size={20} />
               </button>
             </div>
@@ -456,7 +618,119 @@ const FileUpload: React.FC<FileUploadProps> = ({ title, mappings, onDataReady, e
           </div>
         </div>
       )}
-    </div>
+
+      {/* Test Preview Modal */}
+      {showTestPreview && testPreviewData && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+            {/* Modal Header */}
+            <div className="bg-white border-b border-slate-200 p-6">
+              <div className="flex items-start gap-3">
+                <Eye className="text-blue-600 flex-shrink-0 mt-0.5" size={24} />
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">Test Import</h3>
+                  <p className="text-sm text-slate-500 mt-1">Preview what will be imported</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 space-y-5 overflow-auto flex-1">
+              {/* Mode Info */}
+              <div className={`p-4 rounded-lg border-2 ${
+                testPreviewData.mode === 'upsert' ? 'bg-amber-50 border-amber-200' :
+                testPreviewData.mode === 'update' ? 'bg-blue-50 border-blue-200' :
+                'bg-green-50 border-green-200'
+              }`}>
+                <p className="text-sm font-bold text-slate-900 mb-2">
+                  Mode: <span className={
+                    testPreviewData.mode === 'upsert' ? 'text-amber-700' :
+                    testPreviewData.mode === 'update' ? 'text-blue-700' :
+                    'text-green-700'
+                  }>
+                    {testPreviewData.mode === 'upsert' ? 'Smart Upsert' :
+                     testPreviewData.mode === 'update' ? 'Update Only' :
+                     'Insert Only'}
+                  </span>
+                </p>
+                <p className="text-xs text-slate-600">
+                  {testPreviewData.mode === 'upsert' ? 'Will update matching records and insert new ones.' :
+                   testPreviewData.mode === 'update' ? 'Will only update matching records. New records will be skipped.' :
+                   'Will only insert new records. Existing records will be skipped.'}
+                </p>
+              </div>
+
+              {/* Data Summary */}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-sm font-bold text-slate-700">Total Rows</span>
+                  <span className="text-lg font-bold text-slate-900">{testPreviewData.rowsToImport}</span>
+                </div>
+
+                <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-sm font-bold text-slate-700">Valid Rows</span>
+                  <span className="text-lg font-bold text-green-600">{testPreviewData.validRows}</span>
+                </div>
+
+                <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <span className="text-sm font-bold text-slate-700">Invalid Rows</span>
+                  <span className="text-lg font-bold text-red-600">{testPreviewData.rowsToImport - testPreviewData.validRows}</span>
+                </div>
+              </div>
+
+              {/* Expected Behavior */}
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-xs font-bold text-blue-800 mb-2 uppercase">Expected Behavior:</p>
+                <ul className="text-xs text-blue-700 space-y-1 ml-3">
+                  {testPreviewData.mode === 'upsert' && (
+                    <>
+                      <li>• Will match records by Flight + Date</li>
+                      <li>• Update matching records</li>
+                      <li>• Insert new records</li>
+                      <li>• Result: No duplicates created</li>
+                    </>
+                  )}
+                  {testPreviewData.mode === 'update' && (
+                    <>
+                      <li>• Will match records by Flight + Date</li>
+                      <li>• Update matching records only</li>
+                      <li>• Skip new records (will be ignored)</li>
+                      <li>• Result: Only existing records updated</li>
+                    </>
+                  )}
+                  {testPreviewData.mode === 'insert' && (
+                    <>
+                      <li>• Will skip any matching records</li>
+                      <li>• Insert new records only</li>
+                      <li>• Existing records remain unchanged</li>
+                      <li>• Result: Only new data added</li>
+                    </>
+                  )}
+                </ul>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="sticky bottom-0 bg-slate-50 border-t border-slate-200 p-6 flex gap-3 justify-end">
+              <button 
+                onClick={() => setShowTestPreview(false)}
+                className="px-6 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={() => {
+                  setShowTestPreview(false);
+                  handleProcess();
+                }}
+                className="px-6 py-2 bg-slate-900 hover:bg-black text-white font-bold rounded-lg transition-colors"
+              >
+                Proceed to Import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}    </div>
   );
 };
 

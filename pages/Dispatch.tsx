@@ -17,10 +17,16 @@ import {
 } from 'chart.js';
 import { Bar, Line } from 'react-chartjs-2';
 import { Home, Layout, BarChart2, FileSpreadsheet, RotateCw, Printer, Settings, AlertTriangle, Plane, ChevronDown, ChevronUp, Plus, Trash2, X, GripHorizontal, Edit, Zap, Save, AlertCircle, ZoomIn, ZoomOut, Loader2, Users, DoorOpen, CalendarClock, ListFilter, Wifi, WifiOff, Cloud } from 'lucide-react';
+
 import FileUpload from '../components/FileUpload';
+import RoleManagerModal from '../components/RoleManagerModal';
+import { DateTimePickerModal } from '../components/DateTimePickerModal';
 import { parseExcelDate, toISOLocal, fmtTime, fmtTimeUTC, fmtDateUTC, getFlightColor } from '../utils/dateUtils';
+import { sanitizeFlightId, sanitizeGate, sanitizeCounter, safeLog } from '../utils/securityUtils';
+import { hasPermission, isAdmin, logAudit } from '../utils/permissionUtils';
 import { Flight, CheckinData, AC_CODE_MAP } from '../types';
 import { supabase } from '../supabaseClient';
+import { exportGateGanttCSV, exportCheckinGanttCSV, exportCombinedGanttCSV } from '../utils/ganttExportService';
 
 // Register ChartJS components locally for this page
 ChartJS.register(
@@ -40,9 +46,10 @@ const QUEUE_CARD_WIDTH = 130;
 const Dispatch: React.FC = () => {
   const navigate = useNavigate();
   const [flights, setFlights] = useState<Flight[]>([]);
-  const [step, setStep] = useState(0); // 0: Choose load mode, 1: Import file, 2: Working
+  const [step, setStep] = useState(0); // 0: Choose load mode, 1.5: Load from cloud, 2: Working
   const [loadMode, setLoadMode] = useState<'cloud' | 'import' | null>(null);
   const [tab, setTab] = useState<'gate' | 'checkin' | 'peak'>('gate');
+  const [canImportFlights, setCanImportFlights] = useState(false);
   
   // Realtime Status
   const [isLive, setIsLive] = useState(false);
@@ -71,6 +78,7 @@ const Dispatch: React.FC = () => {
   // Time Controls
   const [gStart, setGStart] = useState<string>('');
   const [gEnd, setGEnd] = useState<string>('');
+  const [cloudLoadTimePicker, setCloudLoadTimePicker] = useState<{isOpen: boolean, mode: 'datetime', initialDate: string, initialTime: string, field: 'start' | 'end'} | null>(null);
   
   // Specific Time Controls for Peak Analysis
   const [peakStart, setPeakStart] = useState<string>('');
@@ -93,6 +101,20 @@ const Dispatch: React.FC = () => {
   // Export State
   const [isExporting, setIsExporting] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
+  
+  // Gantt CSV Export State
+  const [showGanttExportModal, setShowGanttExportModal] = useState(false);
+  const [ganttExportType, setGanttExportType] = useState<'gate' | 'checkin' | 'combined'>('gate');
+  const [ganttExportDateFrom, setGanttExportDateFrom] = useState<string>('');
+  const [ganttExportDateTo, setGanttExportDateTo] = useState<string>('');
+  const [ganttExportGates, setGanttExportGates] = useState<string[]>([]);
+  const [ganttExportCounters, setGanttExportCounters] = useState<string[]>([]);
+  const [isGanttExporting, setIsGanttExporting] = useState(false);
+
+  // Permission & Admin State
+  const [canEdit, setCanEdit] = useState(true);
+  const [canManageRoles, setCanManageRoles] = useState(false);
+  const [roleManagerOpen, setRoleManagerOpen] = useState(false);
 
   // Cloud data mapping state for manual column parsing
   const [showCloudMapping, setShowCloudMapping] = useState(false);
@@ -113,6 +135,23 @@ const Dispatch: React.FC = () => {
       ...Array.from({length:54},(_,i)=>String(i+1).padStart(2,'0')), 
       ...Array.from({length:7},(_,i)=>"M"+String(i+1).padStart(2,'0'))
   ]);
+
+  // Check permissions on mount
+  useEffect(() => {
+    const checkPermissions = async () => {
+      const canEditFlights = await hasPermission('edit', 'flights');
+      const canManage = await isAdmin();
+      const canImport = await hasPermission('import', 'flights');
+      
+      console.log('[Dispatch] Permission check - canEdit:', canEditFlights, 'isAdmin:', canManage, 'canImport:', canImport);
+      
+      setCanEdit(canEditFlights);
+      setCanManageRoles(canManage);
+      setCanImportFlights(canImport);
+    };
+
+    checkPermissions();
+  }, []);
 
   // Handle Window Resize Events for Queue
   useEffect(() => {
@@ -195,15 +234,18 @@ const Dispatch: React.FC = () => {
         }
     };
 
-  // Helper to format Date to TEXT timestamp "yyyy-mm-dd hh:mm:ss+00" for database
+  // Helper to format Date to TEXT timestamp for database
+  // Store exactly as provided, without timezone conversion
+  // Database stores as "timestamp without time zone" so we preserve exact values
   const formatDateToTextTimestamp = (date: Date): string => {
-    // Use UTC getters to match parseTextTimestamp expectations (DB stored as UTC)
-    const year = date.getUTCFullYear();
-    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(date.getUTCDate()).padStart(2, '0');
-    const hour = String(date.getUTCHours()).padStart(2, '0');
-    const minute = String(date.getUTCMinutes()).padStart(2, '0');
-    const second = String(date.getUTCSeconds()).padStart(2, '0');
+    // ✅ FIX: Use local getters if data was parsed as local time
+    // NOT UTC getters to avoid -7 hour shift
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hour = String(date.getHours()).padStart(2, '0');
+    const minute = String(date.getMinutes()).padStart(2, '0');
+    const second = String(date.getSeconds()).padStart(2, '0');
     return `${year}-${month}-${day} ${hour}:${minute}:${second}+00`;
   };
 
@@ -385,11 +427,22 @@ const Dispatch: React.FC = () => {
     // Persist counters array to DB and return the updated row
     const persistCounters = async (recordId: number | string, countersPayload: any[]) => {
         try {
+            // Check edit permission
+            if (!canEdit) {
+                const error = new Error('❌ You do not have permission to edit flight data. Contact your administrator.');
+                console.error('[persistCounters] Permission denied:', error.message);
+                setFetchError(error.message);
+                throw error;
+            }
+
             console.log('[persistCounters] Iniciando save:', {
                 recordId,
                 payloadCount: countersPayload.length,
                 firstItem: countersPayload[0]
             });
+
+            // Log audit event
+            await logAudit('UPDATE_COUNTERS', 'flight', String(recordId), { countersCount: countersPayload.length });
             
             const { data, error } = await supabase
                 .from(dataTable)
@@ -812,139 +865,7 @@ const Dispatch: React.FC = () => {
     }
   }, [gStart, gEnd, peakStart, peakEnd]);
 
-  // Handle Data Import (Upload -> Insert DB)
-  const handleDataReady = async (rawData: any[], headers: string[], map: Record<string, number>, config: any) => {
-    try {
-      setIsLoading(true);
-      const rowsToInsert: any[] = [];
-      const newFlights: Flight[] = []; // Used for calculating date range
-
-      for(let i=1; i<rawData.length; i++) {
-        const r = rawData[i];
-        
-        // Get flight identifiers (ARR or DEP)
-        const arrFlt = map['arrFlt'] !== -1 ? String(r[map['arrFlt']] || "").trim() : "";
-        const depFlt = map['depFlt'] !== -1 ? String(r[map['depFlt']] || "").trim() : "";
-        
-        if(!arrFlt && !depFlt) continue; // Skip if no flight number
-        
-        // Get times
-        const sta = map['sta'] !== -1 ? parseExcelDate(r[map['sta']], 'auto', config.fixTz) : null;
-        const ata = map['ata'] !== -1 ? parseExcelDate(r[map['ata']], 'auto', config.fixTz) : null;
-        const std = map['std'] !== -1 ? parseExcelDate(r[map['std']], 'auto', config.fixTz) : null;
-        const atd = map['atd'] !== -1 ? parseExcelDate(r[map['atd']], 'auto', config.fixTz) : null;
-        
-        const target = sta || std || ata || atd;
-        if(!target) continue;
-        
-        // Get gate/stand/belt information
-        let gate = map['gate'] !== -1 ? String(r[map['gate']] || "").trim() : "";
-        let depGate = map['depGate'] !== -1 ? String(r[map['depGate']] || "").trim() : "";
-        let arrBelt = map['arrBelt'] !== -1 ? String(r[map['arrBelt']] || "").trim() : "";
-        let counters = map['counters'] !== -1 ? String(r[map['counters']] || "").trim() : "";
-        
-        // Skip cancelled flights
-        const depSts = map['depSts'] !== -1 ? String(r[map['depSts']] || "").toUpperCase() : "";
-        const arrSts = map['arrSts'] !== -1 ? String(r[map['arrSts']] || "").toUpperCase() : "";
-        if(depSts.includes('CX') || depSts.includes('CNL') || arrSts.includes('CX') || arrSts.includes('CNL')) continue;
-        
-        // Get aircraft type
-        const acType = map['acType'] !== -1 ? String(r[map['acType']] || "").trim() : "UNK";
-        const acCode = getACCode(acType);
-        
-        // Get pax and route info
-        const arrPax = map['arrPax'] !== -1 ? parseInt(r[map['arrPax']]) || 0 : 0;
-        const depPax = map['depPax'] !== -1 ? parseInt(r[map['depPax']]) || 0 : 0;
-        const fromLoc = map['from'] !== -1 ? String(r[map['from']] || "").trim().toUpperCase() : "";
-        const toLoc = map['to'] !== -1 ? String(r[map['to']] || "").trim().toUpperCase() : "";
-        
-        // Format timestamps for database
-        const staText = sta ? formatDateToTextTimestamp(sta) : null;
-        const stdText = std ? formatDateToTextTimestamp(std) : null;
-        const ataText = ata ? formatDateToTextTimestamp(ata) : null;
-        const atdText = atd ? formatDateToTextTimestamp(atd) : null;
-        
-        // Build database row - only include columns that exist in schema
-        const dbRow: any = {
-            arr_flight: arrFlt || depFlt,
-            dep_flight: depFlt || arrFlt,
-            ac_type: acType,
-            arr_pax: arrPax,
-            dep_pax: depPax,
-            arr_status: arrSts || 'SCHEDULED',
-            dep_status: depSts || 'SCHEDULED',
-            gate: gate || depGate
-        };
-        
-        // Add optional timestamp columns if they have data
-        if(staText) dbRow.sta = staText;
-        if(stdText) dbRow.std = stdText;
-        if(ataText) dbRow.ata = ataText;
-        if(atdText) dbRow.atd = atdText;
-        
-        rowsToInsert.push(dbRow);
-        
-        // Track for date range calculation
-        const fltId = arrFlt || depFlt;
-        newFlights.push({ 
-            id: fltId, 
-            gate: depGate || gate, 
-            target, 
-            isEtd: !!std, 
-            acType, 
-            acCode, 
-            checkinData: [], 
-            date: target 
-        });
-      }
-
-      if(rowsToInsert.length === 0) { alert("No valid flights found."); setIsLoading(false); return; }
-      
-      // Calculate Window
-      const dates = newFlights.map(f => f.target.getTime());
-      const minTime = Math.min(...dates);
-      const min = new Date(minTime); 
-      min.setUTCHours(min.getUTCHours() - 2);
-      const defaultEnd = new Date(min.getTime() + 12 * 60 * 60 * 1000);
-      
-      const isoStart = toISOLocal(min);
-      const isoEnd = toISOLocal(defaultEnd);
-
-      // Insert to Supabase
-      // Chunking if too large
-      const chunkSize = 100;
-      for (let i = 0; i < rowsToInsert.length; i += chunkSize) {
-          const chunk = rowsToInsert.slice(i, i + chunkSize);
-          const { error } = await supabase.from('flight_schedule').insert(chunk);
-          if(error) {
-              console.error("Insert error:", error);
-              alert(`Error inserting data: ${error.message}`);
-              setIsLoading(false);
-              return;
-          }
-      }
-
-      setGStart(isoStart);
-      setGEnd(isoEnd);
-      setPeakStart(isoStart);
-      setPeakEnd(isoEnd);
-
-      // Directly set flights to display immediately
-      setFlights(newFlights);
-      alert(`✅ Successfully imported ${newFlights.length} flights and saved to Supabase!`);
-      setIsLoading(false);
-      setStep(2);
-      
-      alert(`✅ Successfully imported ${newFlights.length} flights and saved to Supabase!`);
-
-      setIsLoading(false);
-      setStep(2);
-    } catch(e: any) {
-      console.error(e);
-      alert("Error parsing/uploading data: " + e.message);
-      setIsLoading(false);
-    }
-  };
+  // Excel import moved to DataSync.tsx
 
   const getACCode = (t: string) => {
     if(!t) return 'UNK';
@@ -1099,11 +1020,12 @@ const Dispatch: React.FC = () => {
           return;
       }
       
-      if (!Array.isArray(data) || data.length === 0) {
-          alert('Erro: Nenhum counter configurado');
+      // Allow empty counters array (user can delete all counters)
+      if (!Array.isArray(data)) {
+          alert('Erro: Data must be an array');
           return;
       }
-      
+
       const validationErrors: string[] = [];
       for (let i = 0; i < data.length; i++) {
           const counter = data[i];
@@ -1239,6 +1161,74 @@ const Dispatch: React.FC = () => {
       }, 1000);
   };
 
+  // --- GANTT CSV EXPORT FUNCTIONALITY ---
+  const handleExportGanttCSV = () => {
+    if (!flights.length) {
+      alert('No flights to export');
+      return;
+    }
+
+    try {
+      setIsGanttExporting(true);
+
+      // Filter flights based on export settings
+      let filteredFlights = [...flights];
+
+      // Filter by date range if specified
+      if (ganttExportDateFrom) {
+        const dateFrom = new Date(ganttExportDateFrom);
+        filteredFlights = filteredFlights.filter(f => f.target >= dateFrom);
+      }
+      if (ganttExportDateTo) {
+        const dateTo = new Date(ganttExportDateTo);
+        dateTo.setHours(23, 59, 59, 999); // End of day
+        filteredFlights = filteredFlights.filter(f => f.target <= dateTo);
+      }
+
+      // Filter by gates if specified
+      if (ganttExportGates.length > 0 && ganttExportType !== 'checkin') {
+        filteredFlights = filteredFlights.filter(
+          f => f.gate && ganttExportGates.includes(f.gate)
+        );
+      }
+
+      // Filter by counters if specified
+      if (ganttExportCounters.length > 0 && ganttExportType !== 'gate') {
+        filteredFlights = filteredFlights.filter(f =>
+          f.checkinData.some(ck => ganttExportCounters.includes(ck.ctr))
+        );
+      }
+
+      if (!filteredFlights.length) {
+        alert('No flights match the selected filters');
+        setIsGanttExporting(false);
+        return;
+      }
+
+      // Generate filename with date
+      const dateStr = new Date().toISOString().split('T')[0];
+      const filename = `Gate_Plan_${dateStr}.csv`;
+
+      // Export based on type
+      if (ganttExportType === 'gate') {
+        exportGateGanttCSV(filteredFlights, bufS, bufE, filename);
+      } else if (ganttExportType === 'checkin') {
+        exportCheckinGanttCSV(filteredFlights, filename);
+      } else {
+        exportCombinedGanttCSV(filteredFlights, bufS, bufE, filename);
+      }
+
+      console.log(`[Dispatch] Exported ${ganttExportType} Gantt CSV with ${filteredFlights.length} flights`);
+      setShowGanttExportModal(false);
+    } catch (error) {
+      console.error('[Dispatch] Gantt CSV export error:', error);
+      alert('Failed to export Gantt CSV. Check console for details.');
+    } finally {
+      setIsGanttExporting(false);
+    }
+  };
+
+
   // --- DATA PREP ---
     const unassignedFlights = useMemo(() => {
         if (!gStart || !gEnd) return [];
@@ -1353,34 +1343,202 @@ const Dispatch: React.FC = () => {
               </ul>
             </div>
 
-            {/* Import New File */}
-            <div 
-              onClick={() => {
-                setLoadMode('import');
-                setStep(1);
-              }}
-              className="group bg-gradient-to-br from-amber-600/20 to-amber-400/20 border border-amber-400/30 p-8 rounded-2xl cursor-pointer transition-all duration-300 hover:border-amber-400/60 hover:from-amber-600/30 hover:to-amber-400/30 hover:shadow-lg hover:shadow-amber-500/20"
-            >
-              <div className="flex items-center gap-3 mb-4">
-                <FileSpreadsheet className="w-10 h-10 text-amber-400" />
-                <h3 className="text-xl font-bold text-white">Import New File</h3>
+            {/* Import Local Excel File */}
+            {canImportFlights && (
+              <div 
+                onClick={() => {
+                  setLoadMode('import');
+                  setStep(1);
+                }}
+                className="group bg-gradient-to-br from-amber-600/20 to-amber-400/20 border border-amber-400/30 p-8 rounded-2xl cursor-pointer transition-all duration-300 hover:border-amber-400/60 hover:from-amber-600/30 hover:to-amber-400/30 hover:shadow-lg hover:shadow-amber-500/20"
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <FileSpreadsheet className="w-10 h-10 text-amber-400" />
+                  <h3 className="text-xl font-bold text-white">Import Local File</h3>
+                </div>
+                <p className="text-slate-300 text-sm leading-relaxed mb-4">
+                  Upload Excel file from your computer. Load data locally for this session.
+                </p>
+                <ul className="text-xs text-slate-400 space-y-2">
+                  <li>✓ Import Excel file (.xlsx, .xls)</li>
+                  <li>✓ Load locally (no sync)</li>
+                  <li>✓ Quick testing & preview</li>
+                </ul>
               </div>
-              <p className="text-slate-300 text-sm leading-relaxed mb-4">
-                Upload Excel file with flight schedule and sync to Supabase cloud.
-              </p>
-              <ul className="text-xs text-slate-400 space-y-2">
-                <li>✓ Import Excel file</li>
-                <li>✓ Sync to Supabase</li>
-                <li>✓ Enable team access</li>
-              </ul>
-            </div>
+            )}
+
+            {/* No Permission Message */}
+            {!canImportFlights && (
+              <div className="bg-slate-700/50 border border-amber-500/30 p-8 rounded-2xl">
+                <div className="flex items-start gap-4">
+                  <AlertTriangle className="w-6 h-6 text-amber-400 flex-shrink-0 mt-1" />
+                  <div>
+                    <h3 className="text-lg font-bold text-white mb-2">Import Permission Required</h3>
+                    <p className="text-slate-300 text-sm mb-3">
+                      You don't have permission to import flight data locally. 
+                    </p>
+                    <p className="text-slate-400 text-sm">
+                      Please contact your administrator to request import permissions, or use the <strong>Load from Cloud</strong> option to access previously synced data.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <p className="text-xs text-slate-500 text-center mt-8">
-            You can change data source anytime from the home screen.
+            To sync data to cloud, use <strong>Data Sync</strong> tab. You can change data source anytime from the home screen.
           </p>
         </div>
       </div>
+    );
+  }
+
+  // Step 1: Import Local Excel File
+  const handleLocalExcelImport = async (rawData: any[], headers: string[], map: Record<string, number>, config: any) => {
+    try {
+      setIsLoading(true);
+      
+      // Check import permission
+      const canImport = await hasPermission('import', 'flights');
+      if (!canImport) {
+        const error = new Error('❌ You do not have permission to import flight data. Contact your administrator.');
+        console.error('[handleLocalExcelImport] Permission denied:', error.message);
+        setFetchError(error.message);
+        setIsLoading(false);
+        return;
+      }
+      
+      const newFlights: Flight[] = [];
+
+      for(let i=1; i<rawData.length; i++) {
+        const r = rawData[i];
+        
+        // Get flight identifiers (ARR or DEP)
+        const arrFlt = map['arrFlt'] !== -1 ? String(r[map['arrFlt']] || "").trim() : "";
+        const depFlt = map['depFlt'] !== -1 ? String(r[map['depFlt']] || "").trim() : "";
+        
+        if(!arrFlt && !depFlt) continue;
+        
+        // Get times
+        const sta = map['sta'] !== -1 ? parseExcelDate(r[map['sta']], 'auto', config.fixTz) : null;
+        const std = map['std'] !== -1 ? parseExcelDate(r[map['std']], 'auto', config.fixTz) : null;
+        const ata = map['ata'] !== -1 ? parseExcelDate(r[map['ata']], 'auto', config.fixTz) : null;
+        const atd = map['atd'] !== -1 ? parseExcelDate(r[map['atd']], 'auto', config.fixTz) : null;
+        
+        const target = sta || std || ata || atd;
+        if(!target) continue;
+        
+        // Get gate info
+        const gate = map['gate'] !== -1 ? String(r[map['gate']] || "").trim() : "";
+        const depGate = map['depGate'] !== -1 ? String(r[map['depGate']] || "").trim() : "";
+        const countersStr = map['counters'] !== -1 ? String(r[map['counters']] || "").trim() : "";
+        
+        // Get aircraft type
+        const acType = map['acType'] !== -1 ? String(r[map['acType']] || "").trim() : "UNK";
+        const acCode = getACCode(acType);
+        
+        // Skip cancelled flights
+        const depSts = map['depSts'] !== -1 ? String(r[map['depSts']] || "").toUpperCase() : "";
+        const arrSts = map['arrSts'] !== -1 ? String(r[map['arrSts']] || "").toUpperCase() : "";
+        if(depSts.includes('CX') || depSts.includes('CNL') || arrSts.includes('CX') || arrSts.includes('CNL')) continue;
+        
+        // Parse counters if provided
+        const parsedCheckin: CheckinData[] = [];
+        if(countersStr) {
+          const counterList = countersStr.split(',').map(c => c.trim()).filter(c => c);
+          counterList.forEach(ctr => {
+            const defStart = new Date(target.getTime() - 180 * 60000);
+            const defEnd = new Date(target.getTime() - 50 * 60000);
+            parsedCheckin.push({ ctr: ctr.toUpperCase(), start: defStart, end: defEnd });
+          });
+        }
+        
+        const fltId = depFlt || arrFlt;
+        newFlights.push({
+          id: fltId,
+          gate: gate || depGate || 'UNASSIGNED',
+          target,
+          isEtd: !!std,
+          acType,
+          acCode,
+          checkinData: parsedCheckin,
+          date: target
+        });
+      }
+
+      if(newFlights.length === 0) {
+        alert("No valid flights found in Excel file.");
+        setIsLoading(false);
+        return;
+      }
+
+      // Calculate date range
+      const dates = newFlights.map(f => f.target.getTime());
+      const minTime = Math.min(...dates);
+      const min = new Date(minTime);
+      min.setUTCHours(min.getUTCHours() - 2);
+      const defaultEnd = new Date(min.getTime() + 12 * 60 * 60 * 1000);
+      
+      const isoStart = toISOLocal(min);
+      const isoEnd = toISOLocal(defaultEnd);
+
+      // Load flights to memory (no DB sync)
+      setGStart(isoStart);
+      setGEnd(isoEnd);
+      setPeakStart(isoStart);
+      setPeakEnd(isoEnd);
+      setFlights(newFlights);
+      
+      alert(`✅ Successfully loaded ${newFlights.length} flights from Excel!\n\n📌 Data is loaded locally. Changes will not be saved to cloud.`);
+      setIsLoading(false);
+      setStep(2);
+    } catch(e: any) {
+      console.error(e);
+      alert("Error parsing Excel file: " + e.message);
+      setIsLoading(false);
+    }
+  };
+
+  if(step === 1) {
+    return (
+        <div className="relative">
+             {isLoading && (
+                 <div className="absolute inset-0 bg-white/80 z-50 flex items-center justify-center flex-col">
+                     <Loader2 className="animate-spin text-blue-600 mb-2" size={40}/>
+                     <p className="font-bold text-slate-600">Loading Excel data...</p>
+                 </div>
+             )}
+            <FileUpload 
+              title="Import Flight Data from Excel" 
+              mappings={[
+                { key: 'arrFlt', label: 'Arr Flight', optional: true },
+                { key: 'depFlt', label: 'Dep Flight', optional: true },
+                { key: 'sta', label: 'STA (Scheduled Arrival)', optional: true },
+                { key: 'std', label: 'STD (Scheduled Departure)', optional: true },
+                { key: 'ata', label: 'ATA (Estimated Arrival)', optional: true },
+                { key: 'atd', label: 'ATD (Actual Departure)', optional: true },
+                { key: 'acType', label: 'Aircraft Type', optional: true },
+                { key: 'gate', label: 'Gate / Dep Stand', optional: true },
+                { key: 'depGate', label: 'Dep Gate', optional: true },
+                { key: 'counters', label: 'Counters (comma-separated)', optional: true },
+                { key: 'depSts', label: 'Departure Status', optional: true },
+                { key: 'arrSts', label: 'Arrival Status', optional: true }
+              ]} 
+              onDataReady={handleLocalExcelImport}
+              extraConfig={
+                  <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 mt-4">
+                      <div className="flex items-center gap-2 text-amber-800 font-bold mb-2">
+                          <AlertTriangle size={18}/>
+                          <span>Local Load Mode</span>
+                      </div>
+                      <p className="text-xs text-amber-700 leading-relaxed">
+                          Data will be loaded to this session only. Changes are NOT saved to cloud. To sync data to Supabase, use Data Sync tab.
+                      </p>
+                  </div>
+              }
+            />
+        </div>
     );
   }
 
@@ -1419,22 +1577,60 @@ const Dispatch: React.FC = () => {
             <div className="space-y-6">
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">Start Date & Time</label>
-                <input 
-                  type="datetime-local"
-                  value={gStart}
-                  onChange={(e) => setGStart(e.target.value)}
-                  className="w-full border-2 border-slate-200 p-3 rounded-lg focus:border-blue-500 focus:outline-none transition-colors"
-                />
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    placeholder="YYYY-MM-DD HH:MM"
+                    value={gStart}
+                    onChange={(e) => setGStart(e.target.value)}
+                    className="flex-1 border-2 border-slate-200 p-3 rounded-lg focus:border-blue-500 focus:outline-none transition-colors"
+                  />
+                  <button
+                    onClick={() => {
+                      const [date, time] = gStart.split(' ');
+                      setCloudLoadTimePicker({
+                        isOpen: true,
+                        mode: 'datetime',
+                        initialDate: date || '',
+                        initialTime: time || '00:00',
+                        field: 'start'
+                      });
+                    }}
+                    className="px-3 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg font-bold transition-colors"
+                    title="Pick from calendar"
+                  >
+                    📅
+                  </button>
+                </div>
               </div>
 
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">End Date & Time</label>
-                <input 
-                  type="datetime-local"
-                  value={gEnd}
-                  onChange={(e) => setGEnd(e.target.value)}
-                  className="w-full border-2 border-slate-200 p-3 rounded-lg focus:border-blue-500 focus:outline-none transition-colors"
-                />
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    placeholder="YYYY-MM-DD HH:MM"
+                    value={gEnd}
+                    onChange={(e) => setGEnd(e.target.value)}
+                    className="flex-1 border-2 border-slate-200 p-3 rounded-lg focus:border-blue-500 focus:outline-none transition-colors"
+                  />
+                  <button
+                    onClick={() => {
+                      const [date, time] = gEnd.split(' ');
+                      setCloudLoadTimePicker({
+                        isOpen: true,
+                        mode: 'datetime',
+                        initialDate: date || '',
+                        initialTime: time || '00:00',
+                        field: 'end'
+                      });
+                    }}
+                    className="px-3 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg font-bold transition-colors"
+                    title="Pick from calendar"
+                  >
+                    📅
+                  </button>
+                </div>
               </div>
 
               <button 
@@ -1466,57 +1662,32 @@ const Dispatch: React.FC = () => {
               </div>
             )}
           </div>
+          {cloudLoadTimePicker && (
+            <DateTimePickerModal
+              isOpen={cloudLoadTimePicker.isOpen}
+              mode={cloudLoadTimePicker.mode}
+              initialDate={cloudLoadTimePicker.initialDate}
+              initialTime={cloudLoadTimePicker.initialTime}
+              title={cloudLoadTimePicker.field === 'start' ? "Select Start Date & Time" : "Select End Date & Time"}
+              onConfirm={(datetime) => {
+                const formattedDateTime = datetime.replace('T', ' ');
+                if (cloudLoadTimePicker.field === 'start') {
+                  setGStart(formattedDateTime);
+                } else {
+                  setGEnd(formattedDateTime);
+                }
+                setCloudLoadTimePicker(null);
+              }}
+              onCancel={() => setCloudLoadTimePicker(null)}
+              onClose={() => setCloudLoadTimePicker(null)}
+            />
+          )}
         </div>
       </div>
     );
   }
 
-  if(step === 1) {
-    return (
-        <div className="relative">
-             {isLoading && (
-                 <div className="absolute inset-0 bg-white/80 z-50 flex items-center justify-center flex-col">
-                     <Loader2 className="animate-spin text-blue-600 mb-2" size={40}/>
-                     <p className="font-bold text-slate-600">Syncing with Supabase...</p>
-                 </div>
-             )}
-            <FileUpload 
-              title="OpsMaster Dispatch (Cloud)" 
-              mappings={[
-                { key: 'arrFlt', label: 'Arr Flight', optional: true },
-                { key: 'depFlt', label: 'Dep Flight', optional: true },
-                { key: 'sta', label: 'STA (Scheduled Arrival)', optional: true },
-                { key: 'std', label: 'STD (Scheduled Departure)', optional: true },
-                { key: 'ata', label: 'ATA (Estimated Arrival)', optional: true },
-                { key: 'atd', label: 'ATD (Actual Departure)', optional: true },
-                { key: 'acType', label: 'Aircraft Type', optional: true },
-                { key: 'from', label: 'From / Origin', optional: true },
-                { key: 'to', label: 'To / Destination', optional: true },
-                { key: 'arrPax', label: 'Arrival Pax', optional: true },
-                { key: 'depPax', label: 'Departure Pax', optional: true },
-                { key: 'arrSts', label: 'Arrival Status', optional: true },
-                { key: 'depSts', label: 'Departure Status', optional: true },
-                { key: 'gate', label: 'Gate / Dep Stand', optional: true },
-                { key: 'depGate', label: 'Dep Gate', optional: true },
-                { key: 'arrBelt', label: 'Arrival Belt / Carousel', optional: true },
-                { key: 'counters', label: 'Counters', optional: true }
-              ]} 
-              onDataReady={handleDataReady}
-              extraConfig={
-                  <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 mt-4">
-                      <div className="flex items-center gap-2 text-emerald-800 font-bold mb-2">
-                          <Cloud size={18}/>
-                          <span>Cloud Sync</span>
-                      </div>
-                      <p className="text-xs text-emerald-700 leading-relaxed">
-                          Data will be uploaded to Supabase. Realtime collaboration will be enabled automatically for all users viewing this timeframe.
-                      </p>
-                  </div>
-              }
-            />
-        </div>
-    );
-  }
+
 
   // --- INTERNAL COMPONENTS ---
   // (Modals omitted for brevity, logic unchanged)
@@ -1590,6 +1761,8 @@ const Dispatch: React.FC = () => {
      );
      
      const [startCounter, setStartCounter] = useState(rows[0]?.ctr || '01');
+     const [editingTime, setEditingTime] = useState<{isOpen: boolean, mode: 'datetime', initialDate: string, initialTime: string, idx: number, isStart: boolean} | null>(null);
+     const [editingInputs, setEditingInputs] = useState<{startInputs: {[key: number]: string}, endInputs: {[key: number]: string}}>({startInputs: {}, endInputs: {}});
 
      const checkOverlap = (ctr: string, start: Date, end: Date) => {
          let isOverlap = false;
@@ -1633,7 +1806,7 @@ const Dispatch: React.FC = () => {
              <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">
                  <div className="p-5 flex justify-between items-center border-b border-slate-100">
                      <h3 className="text-xl font-extrabold text-slate-800 flex items-center gap-2">
-                         Quản lý Quầy: <span className="text-blue-600">{f.id}</span>
+                         Quản lý Quầy: <span className="text-blue-600">{sanitizeFlightId(f.id)}</span>
                      </h3>
                      <button onClick={() => setCheckinModal(null)} className="text-slate-400 hover:text-slate-600">
                          <X size={24}/>
@@ -1673,26 +1846,38 @@ const Dispatch: React.FC = () => {
                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                              <div>
                                  <label className="text-xs font-bold text-slate-500 mb-1.5 block">Số lượng quầy</label>
-                                 <input 
-                                    type="number" 
-                                    min="1" 
-                                    max="50" 
-                                    value={rows.length} 
-                                    onChange={e => {
-                                        const qty = parseInt(e.target.value) || 0;
-                                        const newRows = [...rows];
-                                        if(qty > rows.length) {
-                                            for(let k=rows.length; k<qty; k++) {
-                                                const prev = rows[rows.length-1] || {ctr:'01', start: new Date(f.target.getTime()-180*60000), end: new Date(f.target.getTime()-50*60000)};
-                                                newRows.push({...prev});
+                                 <div className="flex gap-2">
+                                     <input 
+                                        type="number" 
+                                        min="0" 
+                                        max="50" 
+                                        value={rows.length} 
+                                        onChange={e => {
+                                            const qty = parseInt(e.target.value) || 0;
+                                            const newRows = [...rows];
+                                            if(qty > rows.length) {
+                                                for(let k=rows.length; k<qty; k++) {
+                                                    const prev = rows[rows.length-1] || {ctr:'01', start: new Date(f.target.getTime()-180*60000), end: new Date(f.target.getTime()-50*60000)};
+                                                    newRows.push({...prev});
+                                                }
+                                            } else if(qty < rows.length) {
+                                                // Only remove excess counters (from index qty onwards)
+                                                newRows.splice(qty, rows.length - qty);
                                             }
-                                        } else {
-                                            newRows.splice(qty);
-                                        }
-                                        setRows(newRows);
-                                    }}
-                                    className="w-full border border-slate-300 bg-white text-slate-900 rounded-md p-2.5 text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none" 
-                                 />
+                                            setRows(newRows);
+                                        }}
+                                        className="flex-1 border border-slate-300 bg-white text-slate-900 rounded-md p-2.5 text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none" 
+                                     />
+                                     {rows.length > 0 && (
+                                         <button
+                                            onClick={() => setRows([])}
+                                            className="px-3 py-2 bg-red-500 hover:bg-red-600 text-white font-bold rounded-md text-xs transition-colors"
+                                            title="Delete all counters"
+                                         >
+                                             Delete All
+                                         </button>
+                                     )}
+                                 </div>
                              </div>
                              <div>
                                  <label className="text-xs font-bold text-slate-500 mb-1.5 block">Bắt đầu từ</label>
@@ -1732,22 +1917,108 @@ const Dispatch: React.FC = () => {
                                              </select>
                                          </div>
                                          <div className="relative">
-                                             <input 
-                                                type="datetime-local" 
-                                                value={toISOLocal(r.start)} 
-                                                onChange={e => updateRow(i, 'start', new Date(e.target.value))} 
-                                                onClick={(e) => e.currentTarget.showPicker()}
-                                                className={`w-full p-2 border rounded-md text-xs font-mono font-medium text-slate-900 bg-white cursor-pointer ${isOverlap ? 'border-red-400 bg-red-50' : 'border-slate-300'}`} 
-                                             />
+                                             <div className="flex gap-1 items-center">
+                                                 <input
+                                                    type="text"
+                                                    placeholder="YYYY-MM-DD HH:MM"
+                                                    value={editingInputs.startInputs[i] !== undefined ? editingInputs.startInputs[i] : toISOLocal(r.start).replace('T', ' ')}
+                                                    onChange={(e) => {
+                                                        const raw = e.target.value;
+                                                        setEditingInputs(prev => ({
+                                                            ...prev,
+                                                            startInputs: {...prev.startInputs, [i]: raw}
+                                                        }));
+                                                        
+                                                        const cleaned = raw.replace(/[^\d\-\s:]/g, '');
+                                                        
+                                                        // Try multiple format matches
+                                                        if (cleaned.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)) {
+                                                            const isoStr = localClockToUTCISOString(cleaned.replace(' ', 'T'));
+                                                            if (isoStr) updateRow(i, 'start', new Date(isoStr));
+                                                        } else if (cleaned.match(/^\d{4}-\d{2}-\d{2} \d{2}$/) && cleaned.length === 13) {
+                                                            const isoStr = localClockToUTCISOString(`${cleaned}:00`.replace(' ', 'T'));
+                                                            if (isoStr) updateRow(i, 'start', new Date(isoStr));
+                                                        }
+                                                    }}
+                                                    onBlur={(e) => {
+                                                        // Clear editing state on blur to show formatted value
+                                                        setEditingInputs(prev => {
+                                                            const newState = {...prev};
+                                                            delete newState.startInputs[i];
+                                                            return newState;
+                                                        });
+                                                    }}
+                                                    className={`flex-1 p-2 border rounded-md text-xs font-mono font-medium text-slate-900 bg-white ${isOverlap ? 'border-red-400 bg-red-50' : 'border-slate-300'} focus:ring-2 focus:ring-blue-400 outline-none`}
+                                                 />
+                                                 <button
+                                                    onClick={() => {
+                                                        setEditingTime({
+                                                            isOpen: true,
+                                                            mode: 'datetime',
+                                                            initialDate: toISOLocal(r.start).split('T')[0],
+                                                            initialTime: toISOLocal(r.start).split('T')[1],
+                                                            idx: i,
+                                                            isStart: true
+                                                        });
+                                                    }}
+                                                    className="px-2 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md text-xs font-bold transition-colors"
+                                                    title="Pick from calendar"
+                                                 >
+                                                     📅
+                                                 </button>
+                                             </div>
                                          </div>
                                          <div className="relative">
-                                             <input 
-                                                type="datetime-local" 
-                                                value={toISOLocal(r.end)} 
-                                                onChange={e => updateRow(i, 'end', new Date(e.target.value))} 
-                                                onClick={(e) => e.currentTarget.showPicker()}
-                                                className={`w-full p-2 border rounded-md text-xs font-mono font-medium text-slate-900 bg-white cursor-pointer ${isOverlap ? 'border-red-400 bg-red-50' : 'border-slate-300'}`} 
-                                             />
+                                             <div className="flex gap-1 items-center">
+                                                 <input
+                                                    type="text"
+                                                    placeholder="YYYY-MM-DD HH:MM"
+                                                    value={editingInputs.endInputs[i] !== undefined ? editingInputs.endInputs[i] : toISOLocal(r.end).replace('T', ' ')}
+                                                    onChange={(e) => {
+                                                        const raw = e.target.value;
+                                                        setEditingInputs(prev => ({
+                                                            ...prev,
+                                                            endInputs: {...prev.endInputs, [i]: raw}
+                                                        }));
+                                                        
+                                                        const cleaned = raw.replace(/[^\d\-\s:]/g, '');
+                                                        
+                                                        // Try multiple format matches
+                                                        if (cleaned.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)) {
+                                                            const isoStr = localClockToUTCISOString(cleaned.replace(' ', 'T'));
+                                                            if (isoStr) updateRow(i, 'end', new Date(isoStr));
+                                                        } else if (cleaned.match(/^\d{4}-\d{2}-\d{2} \d{2}$/) && cleaned.length === 13) {
+                                                            const isoStr = localClockToUTCISOString(`${cleaned}:00`.replace(' ', 'T'));
+                                                            if (isoStr) updateRow(i, 'end', new Date(isoStr));
+                                                        }
+                                                    }}
+                                                    onBlur={(e) => {
+                                                        // Clear editing state on blur to show formatted value
+                                                        setEditingInputs(prev => {
+                                                            const newState = {...prev};
+                                                            delete newState.endInputs[i];
+                                                            return newState;
+                                                        });
+                                                    }}
+                                                    className={`flex-1 p-2 border rounded-md text-xs font-mono font-medium text-slate-900 bg-white ${isOverlap ? 'border-red-400 bg-red-50' : 'border-slate-300'} focus:ring-2 focus:ring-blue-400 outline-none`}
+                                                 />
+                                                 <button
+                                                    onClick={() => {
+                                                        setEditingTime({
+                                                            isOpen: true,
+                                                            mode: 'datetime',
+                                                            initialDate: toISOLocal(r.end).split('T')[0],
+                                                            initialTime: toISOLocal(r.end).split('T')[1],
+                                                            idx: i,
+                                                            isStart: false
+                                                        });
+                                                    }}
+                                                    className="px-2 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md text-xs font-bold transition-colors"
+                                                    title="Pick from calendar"
+                                                 >
+                                                     📅
+                                                 </button>
+                                             </div>
                                          </div>
                                      </div>
                                      {isOverlap && (
@@ -1775,6 +2046,25 @@ const Dispatch: React.FC = () => {
                      <button onClick={() => saveCheckinConfig(checkinModal.idx, rows)} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-md font-bold text-sm hover:bg-blue-700 shadow-md hover:shadow-blue-500/30 transition-all"><Save size={16}/> Lưu thay đổi</button>
                  </div>
              </div>
+             {editingTime && (
+               <DateTimePickerModal
+                 isOpen={editingTime.isOpen}
+                 mode={editingTime.mode}
+                 initialDate={editingTime.initialDate}
+                 initialTime={editingTime.initialTime}
+                 title={editingTime.isStart ? "Select Check-in Start Time" : "Select Check-in End Time"}
+                 onConfirm={(datetime) => {
+                   const [dateStr, timeStr] = datetime.split('T');
+                   const isoStr = localClockToUTCISOString(`${dateStr}T${timeStr}`);
+                   if (isoStr) {
+                     updateRow(editingTime.idx, editingTime.isStart ? 'start' : 'end', new Date(isoStr));
+                   }
+                   setEditingTime(null);
+                 }}
+                 onCancel={() => setEditingTime(null)}
+                 onClose={() => setEditingTime(null)}
+               />
+             )}
          </div>
      );
   };
@@ -1794,9 +2084,9 @@ const Dispatch: React.FC = () => {
       const exportZoom = timelineWidth / totalMin; 
       
       const isGate = tab === 'gate';
-      const rowHeight = isGate ? 60 : 28; 
-      const fontSizeId = isGate ? 'text-sm' : 'text-[11px]';
-      const fontSizeTime = 'text-[10px]';
+      const rowHeight = isGate ? 60 : 40; 
+      const fontSizeId = isGate ? 'text-sm' : 'text-[12px]';
+      const fontSizeTime = 'text-[11px]';
 
       const renderSheet = (sheetTitle: string, rows: string[]) => (
           <div className="bg-white p-4 font-sans mb-8 border-4 border-slate-100" style={{ width: totalWidth + 50 }}>
@@ -1884,7 +2174,7 @@ const Dispatch: React.FC = () => {
                                                   className="absolute top-0.5 bottom-0.5 rounded border border-slate-500 flex items-center justify-center shadow-sm"
                                                   style={{ left, width, backgroundColor: color }}
                                               >
-                                                  <div className={`${fontSizeId} font-black text-slate-900 z-10 leading-none text-center`}>{it.id}</div>
+                                                  <div className={`${fontSizeId} font-black text-slate-900 z-10 leading-none text-center`}>{sanitizeFlightId(it.id)}</div>
                                                   
                                                   {width > 25 && (
                                                       <>
@@ -1977,7 +2267,7 @@ const Dispatch: React.FC = () => {
     const scrollRef = type === 'gate' ? gateScrollRef : ckScrollRef;
     const headerRef = type === 'gate' ? gateHeaderRef : ckHeaderRef;
     const currentQueueHeight = isQueueOpen ? queueHeight : 45;
-    const rowHeightClass = "h-[64px]"; 
+    const rowHeightClass = "h-[50px]"; 
 
     return (
         <div className="flex flex-col h-full bg-white border-t border-slate-300 flex-1 min-h-0">
@@ -2016,7 +2306,7 @@ const Dispatch: React.FC = () => {
                                          title={`STD: ${fmtTimeUTC(it.target)}`}
                                      >
                                          <div className="flex justify-between items-center">
-                                             <span className="font-black text-xs text-slate-800">{it.id}</span>
+                                             <span className="font-black text-xs text-slate-800">{sanitizeFlightId(it.id)}</span>
                                              <span className="text-[9px] font-bold text-slate-500 bg-slate-100 px-1 rounded">{it.acCode}</span>
                                          </div>
                                          <div className="flex justify-between items-center mt-1">
@@ -2076,7 +2366,7 @@ const Dispatch: React.FC = () => {
                      </div>
                      
                      {/* Gantt Content */}
-                     <div className="relative" style={{ width: totalWidth, height: rows.length * 64 }}>
+                     <div className="relative" style={{ width: totalWidth, height: rows.length * 50 }}>
                          <div className="absolute inset-0 pointer-events-none z-0">{ticks}</div>
                          {rows.map((row, rIdx) => {
                              let items: any[] = [];
@@ -2131,18 +2421,18 @@ const Dispatch: React.FC = () => {
                                                  onClick={(e) => { e.stopPropagation(); if(type === 'checkin') setCheckinModal({ idx: it.fIdx, ckIdx: it.ckIdx }); }}
                                                  className={`absolute top-2 bottom-2 rounded-md px-2 flex flex-col justify-center cursor-move border transition-all hover:z-50 hover:shadow-xl hover:scale-[1.02] overflow-hidden select-none ${it.conflict ? 'border-red-500 text-red-900 shadow-sm' : 'border-slate-300/50 text-slate-800 shadow-md'} ${it.isEtd ? 'border-dashed border-slate-600' : ''}`}
                                                  style={{ left: x, width: w, background: it.conflict ? bgStyle : undefined, backgroundColor: !it.conflict ? bgStyle : undefined }}
-                                                 title={`${it.id} | ${it.acType} | ${fmtTimeUTC(it.start)} - ${fmtTimeUTC(it.end)}`}
+                                                 title={`${sanitizeFlightId(it.id)} | ${it.acType} | ${fmtTimeUTC(it.start)} - ${fmtTimeUTC(it.end)}`}
                                              >
-                                                 <div className="flex justify-between items-center gap-1 w-full">
+                                                 <div className="flex items-center gap-1.5 w-full">
                                                      <div className="flex items-center gap-1 overflow-hidden">
-                                                        {w > 40 && <Plane size={10} className="text-slate-500 opacity-50 flex-shrink-0"/>}
-                                                        <span className="font-black text-[11px] truncate leading-tight">{it.id}</span>
+                                                        {w > 40 && <Plane size={11} className="text-slate-600 opacity-60 flex-shrink-0"/>}
+                                                        <span className="font-black text-[12px] truncate leading-tight">{sanitizeFlightId(it.id)}</span>
                                                      </div>
-                                                     {w > 100 && (
-                                                         <div className="flex justify-between items-center mt-1 border-t border-black/5 pt-0.5">
-                                                             <span className="text-[9px] font-mono opacity-80">{fmtTimeUTC(it.start)}</span>
-                                                             <div className="h-0.5 flex-1 bg-black/10 mx-1 rounded-full"></div>
-                                                             <span className="text-[9px] font-mono opacity-80">{fmtTimeUTC(it.end)}</span>
+                                                     {w > 70 && (
+                                                         <div className="flex items-center gap-1 text-[12px] font-mono font-bold opacity-85 flex-shrink-0 ml-auto">
+                                                             <span>{fmtTimeUTC(it.start)}</span>
+                                                             <span className="opacity-60">-</span>
+                                                             <span>{fmtTimeUTC(it.end)}</span>
                                                          </div>
                                                      )}
                                                  </div>
@@ -2208,22 +2498,22 @@ const Dispatch: React.FC = () => {
                         <div className="flex flex-col">
                             <label className="text-[10px] font-bold text-slate-400">FROM</label>
                             <input 
-                                type="datetime-local" 
+                                type="text"
+                                placeholder="YYYY-MM-DD HH:MM"
                                 value={peakStart} 
                                 onChange={e => setPeakStart(e.target.value)} 
-                                onClick={(e) => e.currentTarget.showPicker()}
-                                className="border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 bg-white outline-none focus:border-blue-500 shadow-sm cursor-pointer"
+                                className="border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 bg-white outline-none focus:border-blue-500 shadow-sm"
                             />
                         </div>
                         <span className="text-slate-300">➜</span>
                         <div className="flex flex-col">
                              <label className="text-[10px] font-bold text-slate-400">TO</label>
                              <input 
-                                type="datetime-local" 
+                                type="text"
+                                placeholder="YYYY-MM-DD HH:MM"
                                 value={peakEnd} 
                                 onChange={e => setPeakEnd(e.target.value)} 
-                                onClick={(e) => e.currentTarget.showPicker()}
-                                className="border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 bg-white outline-none focus:border-blue-500 shadow-sm cursor-pointer"
+                                className="border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 bg-white outline-none focus:border-blue-500 shadow-sm"
                              />
                         </div>
                     </div>
@@ -2850,6 +3140,7 @@ const Dispatch: React.FC = () => {
 
                   <button onClick={() => {}} className="p-2.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100"><RotateCw size={20} /></button>
                   {tab === 'gate' && <button onClick={() => setGateModalOpen(true)} className="p-2.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100"><Settings size={20} /></button>}
+                  {canManageRoles && <button onClick={() => setRoleManagerOpen(true)} className="p-2.5 text-slate-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors border border-transparent hover:border-purple-100" title="Manage Roles & Permissions"><Users size={20} /></button>}
                   <button 
                     onClick={handleExportPDF} 
                     disabled={isExporting}
@@ -2857,6 +3148,15 @@ const Dispatch: React.FC = () => {
                   >
                       {isExporting ? <Loader2 size={16} className="animate-spin"/> : <Printer size={16} />} 
                       {isExporting ? 'Generating PDF...' : 'Export PDF'}
+                  </button>
+                  <button 
+                    onClick={() => setShowGanttExportModal(true)}
+                    disabled={isGanttExporting}
+                    className={`flex items-center gap-2 px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold shadow-md hover:shadow-lg transition-all ${isGanttExporting ? 'cursor-wait opacity-80' : ''}`}
+                    title="Export Gantt timeline data as CSV for Power BI"
+                  >
+                      {isGanttExporting ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16} />}
+                      {isGanttExporting ? 'Exporting...' : 'Export CSV'}
                   </button>
               </div>
           </div>
@@ -2875,6 +3175,7 @@ const Dispatch: React.FC = () => {
       {/* Modals */}
       {checkinModal && <CheckinEditModal />}
       {gateModalOpen && <GateManagerModal />}
+      {roleManagerOpen && <RoleManagerModal isOpen={roleManagerOpen} onClose={() => setRoleManagerOpen(false)} />}
       {peakDetail && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center">
               <div className="bg-white rounded-xl shadow-2xl overflow-hidden w-96 animate-in fade-in zoom-in duration-200">
@@ -2886,7 +3187,7 @@ const Dispatch: React.FC = () => {
                       {peakDetail.flights.map((f, i) => (
                           <div key={i} className="flex justify-between items-center text-sm p-3 hover:bg-slate-50 border-b border-slate-100 last:border-0">
                               <div>
-                                  <div className="font-bold text-slate-800">{f.id}</div>
+                                  <div className="font-bold text-slate-800">{sanitizeFlightId(f.id)}</div>
                                   <div className="text-xs text-slate-500">{f.acType}</div>
                               </div>
                               <div className="text-right">
@@ -2899,8 +3200,183 @@ const Dispatch: React.FC = () => {
               </div>
           </div>
       )}
+
+      {/* Gantt CSV Export Modal */}
+      {showGanttExportModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-emerald-600 to-emerald-700 text-white p-6 flex justify-between items-center">
+              <h2 className="text-xl font-bold">Export Gantt CSV</h2>
+              <button
+                onClick={() => setShowGanttExportModal(false)}
+                className="p-1 hover:bg-emerald-500 rounded-lg transition"
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-6">
+              {/* Export Type Selection */}
+              <div className="space-y-3">
+                <label className="block text-sm font-bold text-slate-700">Export Type</label>
+                <div className="flex gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="ganttExportType"
+                      value="gate"
+                      checked={ganttExportType === 'gate'}
+                      onChange={(e) => setGanttExportType(e.target.value as 'gate' | 'checkin' | 'combined')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-slate-700">Gate Timeline</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="ganttExportType"
+                      value="checkin"
+                      checked={ganttExportType === 'checkin'}
+                      onChange={(e) => setGanttExportType(e.target.value as 'gate' | 'checkin' | 'combined')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-slate-700">Check-in Timeline</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="ganttExportType"
+                      value="combined"
+                      checked={ganttExportType === 'combined'}
+                      onChange={(e) => setGanttExportType(e.target.value as 'gate' | 'checkin' | 'combined')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm text-slate-700">Combined</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Date Range Filter */}
+              <div className="space-y-3">
+                <label className="block text-sm font-bold text-slate-700">Date Range (Optional)</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <input
+                      type="date"
+                      value={ganttExportDateFrom}
+                      onChange={(e) => setGanttExportDateFrom(e.target.value)}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 outline-none"
+                      placeholder="From"
+                    />
+                  </div>
+                  <div>
+                    <input
+                      type="date"
+                      value={ganttExportDateTo}
+                      onChange={(e) => setGanttExportDateTo(e.target.value)}
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-emerald-500 outline-none"
+                      placeholder="To"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Gate Filter */}
+              {ganttExportType !== 'checkin' && (
+                <div className="space-y-3">
+                  <label className="block text-sm font-bold text-slate-700">Gates (Optional)</label>
+                  <div className="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-3">
+                    {activeGates.map((gate) => (
+                      <label key={gate} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={ganttExportGates.includes(gate)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setGanttExportGates([...ganttExportGates, gate]);
+                            } else {
+                              setGanttExportGates(ganttExportGates.filter(g => g !== gate));
+                            }
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-xs text-slate-700">{gate}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Counter Filter */}
+              {ganttExportType !== 'gate' && ckRows && ckRows.length > 0 && (
+                <div className="space-y-3">
+                  <label className="block text-sm font-bold text-slate-700">Counters (Optional)</label>
+                  <div className="grid grid-cols-3 gap-2 max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-3">
+                    {ckRows.map((counter) => (
+                      <label key={counter} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={ganttExportCounters.includes(counter)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setGanttExportCounters([...ganttExportCounters, counter]);
+                            } else {
+                              setGanttExportCounters(ganttExportCounters.filter(c => c !== counter));
+                            }
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-xs text-slate-700">{counter}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Info Message */}
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                <p className="text-xs text-emerald-900">
+                  <span className="font-bold">Note:</span> Only assigned flights will be exported. Unassigned flights are excluded.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="bg-slate-50 px-6 py-4 flex gap-3 justify-end border-t border-slate-200">
+              <button
+                onClick={() => setShowGanttExportModal(false)}
+                className="px-6 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-900 font-bold rounded-lg transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleExportGanttCSV}
+                disabled={isGanttExporting}
+                className={`px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition shadow-md flex items-center gap-2 ${
+                  isGanttExporting ? 'opacity-80 cursor-wait' : ''
+                }`}
+              >
+                {isGanttExporting ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <FileSpreadsheet size={16} />
+                    Export CSV
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 export default Dispatch;
+

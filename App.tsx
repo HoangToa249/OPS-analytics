@@ -5,6 +5,8 @@ import Dispatch from './pages/Dispatch';
 import DispatchLocal from './pages/DispatchLocal';
 import Analytics from './pages/Analytics';
 import AnalyticsLocal from './pages/AnalyticsLocal';
+import FlightDataTable from './pages/FlightDataTable';
+import DataSync from './pages/DataSync';
 import { ProtectedRoute } from './components/ProtectedRoute';
 
 const App: React.FC = () => {
@@ -17,6 +19,8 @@ const App: React.FC = () => {
         {/* Protected Routes - Require Login */}
         <Route path="/dispatch" element={<ProtectedRoute><Dispatch /></ProtectedRoute>} />
         <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+        <Route path="/data-table" element={<ProtectedRoute><FlightDataTable /></ProtectedRoute>} />
+        <Route path="/data-sync" element={<ProtectedRoute><DataSync /></ProtectedRoute>} />
         
         {/* Protected Backup Routes - Require Login */}
         <Route path="/dispatch-local" element={<ProtectedRoute><DispatchLocal /></ProtectedRoute>} />

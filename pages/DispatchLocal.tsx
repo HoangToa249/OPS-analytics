@@ -695,7 +695,7 @@ const DispatchLocal: React.FC = () => {
           <div className="bg-white p-4 font-sans mb-8 border-4 border-slate-100" style={{ width: totalWidth + 50 }}>
               <div className="text-center mb-6">
                   <h1 className="text-3xl font-bold text-slate-900 mb-2 uppercase tracking-wide">{sheetTitle}</h1>
-                  <p className="text-slate-500 font-bold text-lg">Period: {s.toLocaleString()} - {e.toLocaleString()}</p>
+                  <p className="text-slate-500 font-bold text-lg">Period: {fmtDateUTC(s)} {fmtTimeUTC(s)} - {fmtDateUTC(e)} {fmtTimeUTC(e)}</p>
               </div>
 
               <div className="flex border-2 border-slate-800">
