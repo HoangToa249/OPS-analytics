@@ -12,7 +12,6 @@ export interface GateStat {
   totalFlights: number;
   totalUtilizationMin: number;
   avgUtilizationMin: number;
-  utilizationPercent: number; // % of day utilized
   peakHour: number; // Hour with most flights
   hasConflicts: boolean;
   conflicts: number;
@@ -28,7 +27,6 @@ export interface StandStat {
   peakHour: number;
   hasConflicts: boolean;
   conflicts: number;
-  utilizationPercent: number; // % of range utilized
 }
 
 export interface BeltStat {
@@ -37,7 +35,6 @@ export interface BeltStat {
   totalPassengers: number;
   avgThroughputPerHour: number;
   peakHour: number;
-  utilizationPercent: number;
 }
 
 export interface HourlyInfraMetrics {
@@ -60,8 +57,6 @@ export interface InfrastructureMetrics {
   hourlyMetrics: HourlyInfraMetrics[];
   
   // KPI Summary
-  avgGateUtilizationPercent: number;
-  avgStandUtilizationPercent: number;
   totalGateConflicts: number;
   totalStandConflicts: number;
   avgBeltThroughputPerHour: number;
@@ -363,11 +358,6 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     const totalUtilMin = getTotalMinutesWithoutDoubleCount(intervals);
     
     const avgUtilMin = gateFlights.length > 0 ? totalUtilMin / gateFlights.length : 0;
-    
-    // Calculate utilization percent (minutes used / total minutes in selected date range)
-    const daysInRange = Math.max(1, (dateEnd.getTime() - dateStart.getTime()) / (1000 * 60 * 60 * 24));
-    const totalMinutesInRange = daysInRange * 24 * 60;
-    const utilizationPercent = Math.min((totalUtilMin / totalMinutesInRange) * 100, 100); // Cap at 100%
 
     // Find peak hour - standardized: most number of flights
     let peakHour = 0;
@@ -388,7 +378,6 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       totalFlights: gateFlights.length,
       totalUtilizationMin: totalUtilMin,
       avgUtilizationMin: avgUtilMin,
-      utilizationPercent,
       peakHour,
       hasConflicts: conflicts > 0,
       conflicts,
@@ -494,10 +483,6 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     // Count conflicts using refactored function
     const conflicts = detectStandConflicts(standId, allFlights);
 
-    const daysInRange = Math.max(1, (dateEnd.getTime() - dateStart.getTime()) / (1000 * 60 * 60 * 24));
-    const totalMinutesInRange = daysInRange * 24 * 60;
-    const utilizationPercent = Math.min((totalUtilMin / totalMinutesInRange) * 100, 100); // Cap at 100%
-
     return {
       standId,
       totalFlights: allFlights.length,
@@ -508,7 +493,6 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       peakHour,
       hasConflicts: conflicts > 0,
       conflicts,
-      utilizationPercent,
     };
   });
 
@@ -517,7 +501,7 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     const totalPax = beltFlights.reduce((sum, f) => sum + (f.arrPax || 0), 0);
     
     if (beltFlights.length === 0 || totalPax === 0) {
-      return { beltId, arrivalFlights: 0, totalPassengers: 0, avgThroughputPerHour: 0, peakHour: 0, utilizationPercent: 0 };
+      return { beltId, arrivalFlights: 0, totalPassengers: 0, avgThroughputPerHour: 0, peakHour: 0 };
     }
 
     // FIXED: Better utilization calculation for belts
@@ -545,30 +529,16 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       }
     }
 
-    const daysInRange = Math.max(1, (dateEnd.getTime() - dateStart.getTime()) / (1000 * 60 * 60 * 24));
-    const totalMinutesInRange = daysInRange * 24 * 60;
-    const utilizationPercent = Math.min((utilizationMin / totalMinutesInRange) * 100, 100); // Cap at 100%
-
     return {
       beltId,
       arrivalFlights: beltFlights.length,
       totalPassengers: totalPax,
       avgThroughputPerHour: throughputPerHour,
       peakHour,
-      utilizationPercent,
     };
   });
 
-  // Calculate KPI Summary - FIX: Consistent utilization calculation
-  const avgGateUtilizationPercent = gateStats.length > 0 
-    ? gateStats.reduce((sum, g) => sum + g.utilizationPercent, 0) / gateStats.length 
-    : 0;
-
-  // FIXED: Stand utilization calculation - use same formula as Gate
-  const avgStandUtilizationPercent = standStats.length > 0 
-    ? standStats.reduce((sum, s) => sum + (s.totalUtilizationMin / (24 * 60)) * 100, 0) / standStats.length 
-    : 0;
-
+  // Calculate KPI Summary
   const totalGateConflicts = gateStats.reduce((sum, g) => sum + g.conflicts, 0);
   const totalStandConflicts = standStats.reduce((sum, s) => sum + s.conflicts, 0);
   
@@ -583,8 +553,6 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     standStats: standStats.sort((a, b) => b.totalFlights - a.totalFlights),
     beltStats: beltStats.sort((a, b) => b.arrivalFlights - a.arrivalFlights),
     hourlyMetrics,
-    avgGateUtilizationPercent,
-    avgStandUtilizationPercent,
     totalGateConflicts,
     totalStandConflicts,
     avgBeltThroughputPerHour,

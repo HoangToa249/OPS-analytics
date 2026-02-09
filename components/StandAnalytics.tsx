@@ -14,17 +14,6 @@ interface StandAnalyticsProps {
 }
 
 const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetrics }) => {
-  // Prepare utilization chart data - IMPROVED: include turnaround metric
-  const utilizationData = useMemo(() => {
-    return standStats.slice(0, 15).map(stand => ({
-      stand: stand.standId,
-      flights: stand.totalFlights,
-      utilization: stand.utilizationPercent,
-      turnaround: stand.avgTurnaroundMin,
-      type: stand.standType,
-    }));
-  }, [standStats]);
-
   // Prepare turnaround comparison - IMPROVED: color by efficiency
   const turnaroundData = useMemo(() => {
     return standStats
@@ -66,13 +55,6 @@ const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetri
     ];
   }, [standStats]);
 
-  // Avg utilization
-  const avgUtilization = useMemo(() => {
-    return standStats.length > 0 
-      ? standStats.reduce((sum, s) => sum + s.utilizationPercent, 0) / standStats.length
-      : 0;
-  }, [standStats]);
-
   // Avg turnaround
   const avgTurnaround = useMemo(() => {
     return standStats.length > 0
@@ -98,10 +80,6 @@ const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetri
           <p className="text-sm text-blue-700 dark:text-blue-300 font-bold mb-2">Total Stands</p>
           <p className="text-4xl font-bold text-blue-900 dark:text-blue-100">{standStats.length}</p>
         </div>
-        <div className="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900 dark:to-purple-800 rounded-lg shadow-md p-5 border border-purple-200 dark:border-purple-700">
-          <p className="text-sm text-purple-700 dark:text-purple-300 font-bold mb-2">Avg Utilization</p>
-          <p className="text-4xl font-bold text-purple-900 dark:text-purple-100">{avgUtilization.toFixed(1)}%</p>
-        </div>
         <div className="bg-gradient-to-br from-orange-50 to-orange-100 dark:from-orange-900 dark:to-orange-800 rounded-lg shadow-md p-5 border border-orange-200 dark:border-orange-700">
           <p className="text-sm text-orange-700 dark:text-orange-300 font-bold mb-2">Avg Turnaround</p>
           <p className="text-4xl font-bold text-orange-900 dark:text-orange-100">{avgTurnaround.toFixed(0)}</p>
@@ -113,39 +91,6 @@ const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetri
             {standStats.reduce((sum, s) => sum + s.totalFlights, 0)}
           </p>
         </div>
-      </div>
-
-      {/* Stand Utilization Bar Chart - IMPROVED: better visualization */}
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-md p-5 border border-gray-200 dark:border-gray-700">
-        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50 mb-4 flex items-center gap-2">
-          🏢 Stand Utilization Overview (Top 15)
-          <span className="text-sm font-normal text-gray-600 dark:text-gray-400">by % and flights</span>
-        </h3>
-        <ResponsiveContainer width="100%" height={380}>
-          <BarChart data={utilizationData} layout="vertical" margin={{ left: 60, right: 20 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis type="number" tick={{ fill: '#6b7280' }} />
-            <YAxis dataKey="stand" type="category" width={50} tick={{ fill: '#6b7280', fontSize: 12 }} />
-            <Tooltip 
-              contentStyle={{ backgroundColor: '#1f2937', border: '2px solid #8b5cf6', borderRadius: '8px', color: '#fff' }}
-              formatter={(value: any, name: any) => {
-                if (name === 'utilization') return [(value as number).toFixed(1) + '%', 'Utilization'];
-                return [value, 'Flights'];
-              }}
-              labelFormatter={(label) => `Stand ${label}`}
-            />
-            <Legend wrapperStyle={{ paddingTop: '15px' }} />
-            <Bar dataKey="utilization" fill="#8b5cf6" name="Utilization %" radius={[0, 8, 8, 0]} />
-            <Bar dataKey="flights" fill="#3b82f6" name="Flights" radius={[0, 8, 8, 0]}>
-              {utilizationData.map((entry, index) => (
-                <Cell 
-                  key={`cell-${index}`}
-                  fill={entry.utilization > 60 ? '#ef4444' : entry.utilization > 40 ? '#f59e0b' : '#3b82f6'}
-                />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
       </div>
 
       {/* Turnaround Time Analysis - IMPROVED: better sorting */}
@@ -239,7 +184,6 @@ const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetri
                 <th className="px-4 py-3 text-left text-gray-900 dark:text-gray-100 font-bold">Stand</th>
                 <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Type</th>
                 <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Flights</th>
-                <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Util %</th>
                 <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Turnaround</th>
                 <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Conflicts</th>
                 <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Peak Hour</th>
@@ -247,9 +191,8 @@ const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetri
             </thead>
             <tbody>
               {standStats.map((stand) => {
-                const utilPercent = stand.utilizationPercent;
                 return (
-                  <tr key={stand.standId} className="border-b border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition\">
+                  <tr key={stand.standId} className="border-b border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition">
                     <td className="px-4 py-3 font-bold text-gray-900 dark:text-gray-100">{stand.standId}</td>
                     <td className="px-4 py-3 text-center">
                       <span 
@@ -260,11 +203,6 @@ const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetri
                       </span>
                     </td>
                     <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300 font-semibold">{stand.totalFlights}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={utilPercent > 60 ? 'text-red-600 dark:text-red-400 font-bold' : utilPercent > 40 ? 'text-orange-600 dark:text-orange-400 font-semibold' : 'text-green-600 dark:text-green-400'}>
-                        {utilPercent.toFixed(1)}%
-                      </span>
-                    </td>
                     <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300 font-semibold">
                       {stand.avgTurnaroundMin.toFixed(0)} m
                     </td>

@@ -40,25 +40,12 @@ const GateAnalytics: React.FC<GateAnalyticsProps> = ({ gateStats, hourlyMetrics 
     });
   }, [gateStats, hourlyMetrics]);
 
-  // Prepare utilization chart data - IMPROVED: color coding by utilization level
-  const utilizationData = useMemo(() => {
-    return gateStats.slice(0, 15).map(gate => ({
-      gate: gate.gateId,
-      utilization: gate.utilizationPercent,
-      flights: gate.totalFlights,
-      conflicts: gate.conflicts,
-      hasConflict: gate.hasConflicts,
-      avgUtil: gate.avgUtilizationMin,
-    }));
-  }, [gateStats]);
-
   // Prepare scatter chart for capacity vs conflicts - IMPROVED: better formatting
   const scatterData = useMemo(() => {
     return gateStats.map(gate => ({
       name: gate.gateId,
       flights: gate.totalFlights,
       conflicts: gate.conflicts,
-      utilization: gate.utilizationPercent,
       avgUtil: gate.avgUtilizationMin,
     }));
   }, [gateStats]);
@@ -101,48 +88,6 @@ const GateAnalytics: React.FC<GateAnalyticsProps> = ({ gateStats, hourlyMetrics 
             <Line yAxisId="right" type="stepAfter" dataKey="conflicts" stroke="#ef4444" strokeWidth={2.5} name="Conflicts" dot={{ fill: '#ef4444', r: 4 }} />
           </ComposedChart>
         </ResponsiveContainer>
-      </div>
-
-      {/* Utilization Bar Chart - IMPROVED: color coding */}
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-md p-5 border border-gray-200 dark:border-gray-700">
-        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50 mb-4">
-          🚪 Gate Utilization (%) - Top 15
-        </h3>
-        <ResponsiveContainer width="100%" height={380}>
-          <BarChart data={utilizationData} layout="vertical" margin={{ left: 70, right: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis type="number" tick={{ fill: '#6b7280' }} />
-            <YAxis dataKey="gate" type="category" width={60} tick={{ fill: '#6b7280', fontSize: 12 }} />
-            <Tooltip 
-              contentStyle={{ backgroundColor: '#1f2937', border: '2px solid #3b82f6', borderRadius: '8px', color: '#fff' }}
-              formatter={(value: any) => [(value as number).toFixed(1) + '%', 'Utilization']
-              }
-              labelFormatter={(label) => `Gate: ${label}`}
-            />
-            <Bar dataKey="utilization" fill="#3b82f6" name="Utilization %" radius={[0, 8, 8, 0]}>
-              {utilizationData.map((entry, index) => (
-                <Cell 
-                  key={`cell-${index}`}
-                  fill={entry.utilization > 70 ? '#ef4444' : entry.utilization > 50 ? '#f59e0b' : '#3b82f6'}
-                />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-        <div className="mt-4 grid grid-cols-3 gap-4">
-          <div className="flex items-center gap-2 p-2 bg-red-50 dark:bg-red-900 rounded">
-            <div className="w-4 h-4 bg-red-500 rounded"></div>
-            <span className="text-sm text-red-700 dark:text-red-200 font-medium">High (&gt;70%)</span>
-          </div>
-          <div className="flex items-center gap-2 p-2 bg-yellow-50 dark:bg-yellow-900 rounded">
-            <div className="w-4 h-4 bg-yellow-500 rounded"></div>
-            <span className="text-sm text-yellow-700 dark:text-yellow-200 font-medium">Medium (50-70%)</span>
-          </div>
-          <div className="flex items-center gap-2 p-2 bg-blue-50 dark:bg-blue-900 rounded">
-            <div className="w-4 h-4 bg-blue-500 rounded"></div>
-            <span className="text-sm text-blue-700 dark:text-blue-200 font-medium">Normal (&lt;50%)</span>
-          </div>
-        </div>
       </div>
 
       {/* Gate Traffic vs Conflicts - Bar + Trendline */}
@@ -236,7 +181,6 @@ const GateAnalytics: React.FC<GateAnalyticsProps> = ({ gateStats, hourlyMetrics 
               <tr>
                 <th className="border border-gray-300 dark:border-gray-600 px-4 py-3 text-left font-bold text-gray-900 dark:text-gray-100">Gate</th>
                 <th className="border border-gray-300 dark:border-gray-600 px-4 py-3 text-center font-bold text-gray-900 dark:text-gray-100">Flights</th>
-                <th className="border border-gray-300 dark:border-gray-600 px-4 py-3 text-center font-bold text-gray-900 dark:text-gray-100">Util %</th>
                 <th className="border border-gray-300 dark:border-gray-600 px-4 py-3 text-center font-bold text-gray-900 dark:text-gray-100">Avg Use</th>
                 <th className="border border-gray-300 dark:border-gray-600 px-4 py-3 text-center font-bold text-gray-900 dark:text-gray-100">Conflicts</th>
                 <th className="border border-gray-300 dark:border-gray-600 px-4 py-3 text-center font-bold text-gray-900 dark:text-gray-100">Peak Hour</th>
@@ -247,11 +191,6 @@ const GateAnalytics: React.FC<GateAnalyticsProps> = ({ gateStats, hourlyMetrics 
                 <tr key={gate.gateId} className="border-b border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition">
                   <td className="border border-gray-300 dark:border-gray-600 px-4 py-2 font-bold text-gray-900 dark:text-gray-100">{gate.gateId}</td>
                   <td className="border border-gray-300 dark:border-gray-600 px-4 py-2 text-center text-gray-700 dark:text-gray-300">{gate.totalFlights}</td>
-                  <td className="border border-gray-300 dark:border-gray-600 px-4 py-2 text-center">
-                    <span className={gate.utilizationPercent > 70 ? 'text-red-600 dark:text-red-400 font-bold' : gate.utilizationPercent > 50 ? 'text-orange-600 dark:text-orange-400 font-semibold' : 'text-green-600 dark:text-green-400'}>
-                      {gate.utilizationPercent.toFixed(1)}%
-                    </span>
-                  </td>
                   <td className="border border-gray-300 dark:border-gray-600 px-4 py-2 text-center text-gray-700 dark:text-gray-300">{gate.avgUtilizationMin.toFixed(0)}m</td>
                   <td className="border border-gray-300 dark:border-gray-600 px-4 py-2 text-center">
                     {gate.conflicts > 0 ? (

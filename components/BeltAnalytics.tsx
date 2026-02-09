@@ -14,17 +14,6 @@ interface BeltAnalyticsProps {
 }
 
 const BeltAnalytics: React.FC<BeltAnalyticsProps> = ({ beltStats, hourlyMetrics }) => {
-  // Prepare utilization chart data - IMPROVED: better color coding
-  const utilizationData = useMemo(() => {
-    return beltStats.map(belt => ({
-      belt: belt.beltId,
-      throughput: belt.avgThroughputPerHour,
-      flights: belt.arrivalFlights,
-      passengers: belt.totalPassengers,
-      utilization: belt.utilizationPercent,
-    }));
-  }, [beltStats]);
-
   // Prepare throughput comparison - IMPROVED: sorted by throughput
   const throughputData = useMemo(() => {
     return beltStats
@@ -82,12 +71,6 @@ const BeltAnalytics: React.FC<BeltAnalyticsProps> = ({ beltStats, hourlyMetrics 
       .slice(0, 5);
   }, [beltStats]);
 
-  // Capacity utilization gauge
-  const capacityUtilization = useMemo(() => {
-    if (beltStats.length === 0) return 0;
-    return (beltStats.reduce((sum, b) => sum + b.utilizationPercent, 0) / beltStats.length);
-  }, [beltStats]);
-
   // Belt distribution by passenger volume
   const beltDistribution = useMemo(() => {
     const totalPax = beltStats.reduce((sum, b) => sum + b.totalPassengers, 0);
@@ -123,22 +106,6 @@ const BeltAnalytics: React.FC<BeltAnalyticsProps> = ({ beltStats, hourlyMetrics 
             {(beltStats.length > 0 ? beltStats.reduce((sum, b) => sum + b.avgThroughputPerHour, 0) / beltStats.length : 0).toFixed(0)}
           </p>
           <p className="text-xs text-blue-600 dark:text-blue-400 font-semibold">pax/hr</p>
-        </div>
-        <div className="bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900 dark:to-green-800 rounded-lg shadow-md p-5 border border-green-200 dark:border-green-700">
-          <p className="text-sm text-green-700 dark:text-green-300 font-bold mb-2">Avg Utilization</p>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 w-16 h-2 bg-green-300 dark:bg-green-600 rounded-full overflow-hidden">
-              <div
-                className={`h-full ${
-                  capacityUtilization > 70 ? 'bg-red-600 dark:bg-red-400' : capacityUtilization > 50 ? 'bg-yellow-600 dark:bg-yellow-400' : 'bg-green-600 dark:bg-green-400'
-                }`}
-                style={{ width: `${Math.min(capacityUtilization, 100)}%` }}
-              />
-            </div>
-            <span className="text-xl font-bold text-green-900 dark:text-green-100">
-              {capacityUtilization.toFixed(0)}%
-            </span>
-          </div>
         </div>
       </div>
 
@@ -290,7 +257,6 @@ const BeltAnalytics: React.FC<BeltAnalyticsProps> = ({ beltStats, hourlyMetrics 
                 <th className="px-4 py-2 text-center text-gray-700 dark:text-gray-300 font-semibold">Total Pax</th>
                 <th className="px-4 py-2 text-center text-gray-700 dark:text-gray-300 font-semibold">Throughput</th>
                 <th className="px-4 py-2 text-center text-gray-700 dark:text-gray-300 font-semibold">Peak Hour</th>
-                <th className="px-4 py-2 text-center text-gray-700 dark:text-gray-300 font-semibold">Utilization</th>
               </tr>
             </thead>
             <tbody>
@@ -306,25 +272,6 @@ const BeltAnalytics: React.FC<BeltAnalyticsProps> = ({ beltStats, hourlyMetrics 
                   </td>
                   <td className="px-4 py-2 text-center text-gray-700 dark:text-gray-300">
                     {String(belt.peakHour).padStart(2, '0')}:00
-                  </td>
-                  <td className="px-4 py-2 text-center">
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="w-20 h-2.5 bg-gray-300 dark:bg-gray-600 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full ${
-                            belt.utilizationPercent > 70
-                              ? 'bg-red-500'
-                              : belt.utilizationPercent > 50
-                              ? 'bg-yellow-500'
-                              : 'bg-green-500'
-                          }`}
-                          style={{ width: `${Math.min(belt.utilizationPercent, 100)}%` }}
-                        />
-                      </div>
-                      <span className="text-gray-700 dark:text-gray-300 text-xs font-medium w-12">
-                        {belt.utilizationPercent.toFixed(1)}%
-                      </span>
-                    </div>
                   </td>
                 </tr>
               ))}

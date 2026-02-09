@@ -97,20 +97,7 @@ const InfrastructureTab: React.FC<InfrastructureTabProps> = ({ flights, dateStar
           value={metrics.totalFlights}
           bgColor="bg-blue-50 dark:bg-blue-900"
         />
-        <KPICard
-          icon={<TrendingUp />}
-          label="Avg Gate Utilization"
-          value={metrics.avgGateUtilizationPercent.toFixed(1)}
-          unit="%"
-          bgColor="bg-green-50 dark:bg-green-900"
-        />
-        <KPICard
-          icon={<Clock />}
-          label="Avg Stand Utilization"
-          value={metrics.avgStandUtilizationPercent.toFixed(1)}
-          unit="%"
-          bgColor="bg-purple-50 dark:bg-purple-900"
-        />
+
         <KPICard
           icon={<Users />}
           label="Avg Belt Throughput"
@@ -179,7 +166,7 @@ const InfrastructureTab: React.FC<InfrastructureTabProps> = ({ flights, dateStar
                 <div className="flex-1">
                   <p className="font-semibold text-gray-700 dark:text-gray-300">{idx + 1}. {gate.gateId}</p>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {gate.totalFlights} flights • {gate.utilizationPercent.toFixed(1)}%
+                    {gate.totalFlights} flights
                   </p>
                 </div>
                 {gate.hasConflicts && <AlertTriangle size={16} className="text-red-500 ml-2" />}
