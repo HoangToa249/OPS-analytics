@@ -5,6 +5,7 @@
 
 import { supabase } from '../supabaseClient';
 import { Flight } from '../types';
+import { parseDbDate } from './dateUtils';
 
 export interface FlightDataFilter {
   dateFrom?: string;
@@ -185,8 +186,8 @@ export const fetchFlightData = async (
           const dateStr = row.std || row.eted || '';
           if (!dateStr) return false;
 
-          const rowDate = new Date(dateStr);
-          if (isNaN(rowDate.getTime())) return false;
+          const rowDate = parseDbDate(dateStr);
+          if (!rowDate || isNaN(rowDate.getTime())) return false;
 
           const rowDateStr = rowDate.toISOString().slice(0, 10);
           const rowTimeStr = rowDate.toISOString().slice(11, 16);

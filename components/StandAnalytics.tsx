@@ -1,11 +1,12 @@
 /**
- * Stand Analytics Component
+ * Stand Analytics Component - IMPROVED
  * Displays stand utilization, turnaround time, and efficiency metrics
  */
 
 import React, { useMemo } from 'react';
-import { Bar, BarChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts';
+import { Bar, BarChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, ScatterChart, Scatter } from 'recharts';
 import { StandStat, HourlyInfraMetrics } from '../utils/infraAnalyticsService';
+import { TrendingUp, AlertTriangle } from 'lucide-react';
 
 interface StandAnalyticsProps {
   standStats: StandStat[];
@@ -13,35 +14,39 @@ interface StandAnalyticsProps {
 }
 
 const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetrics }) => {
-  // Prepare utilization chart data
+  // Prepare utilization chart data - IMPROVED: include turnaround metric
   const utilizationData = useMemo(() => {
     return standStats.slice(0, 15).map(stand => ({
       stand: stand.standId,
       flights: stand.totalFlights,
-      utilization: (stand.totalUtilizationMin / (24 * 60)) * 100,
+      utilization: stand.utilizationPercent,
       turnaround: stand.avgTurnaroundMin,
       type: stand.standType,
     }));
   }, [standStats]);
 
-  // Prepare turnaround comparison
+  // Prepare turnaround comparison - IMPROVED: color by efficiency
   const turnaroundData = useMemo(() => {
     return standStats
-      .sort((a, b) => b.totalFlights - a.totalFlights)
+      .sort((a, b) => a.avgTurnaroundMin - b.avgTurnaroundMin)
       .slice(0, 12)
       .map(stand => ({
         stand: stand.standId,
         turnaround: stand.avgTurnaroundMin,
         flights: stand.totalFlights,
+        type: stand.standType,
       }));
   }, [standStats]);
 
-  // Prepare occupancy by hour
+  // Prepare occupancy by hour - IMPROVED: top 8 stands
   const hourlyOccupancy = useMemo(() => {
-    const top5Stands = standStats.slice(0, 5).map(s => s.standId);
+    const top8Stands = standStats.slice(0, 8).map(s => s.standId);
     return hourlyMetrics.map(hourData => {
-      const row: Record<string, any> = { hour: `${hourData.hour}:00` };
-      top5Stands.forEach(standId => {
+      const row: Record<string, any> = { 
+        hour: `${String(hourData.hour).padStart(2, '0')}:00`,
+        hourNum: hourData.hour
+      };
+      top8Stands.forEach(standId => {
         row[standId] = hourData.standOccupancy[standId] || 0;
       });
       return row;
@@ -55,161 +60,229 @@ const StandAnalytics: React.FC<StandAnalyticsProps> = ({ standStats, hourlyMetri
     const mixedCount = standStats.filter(s => s.standType === 'mixed').length;
     
     return [
-      { type: 'Arrival Only', count: arrCount },
-      { type: 'Departure Only', count: depCount },
-      { type: 'Mixed (A/D)', count: mixedCount },
+      { type: 'Arrival Only', count: arrCount, color: '#3b82f6' },
+      { type: 'Departure Only', count: depCount, color: '#ef4444' },
+      { type: 'Mixed (A/D)', count: mixedCount, color: '#10b981' },
     ];
   }, [standStats]);
 
+  // Avg utilization
+  const avgUtilization = useMemo(() => {
+    return standStats.length > 0 
+      ? standStats.reduce((sum, s) => sum + s.utilizationPercent, 0) / standStats.length
+      : 0;
+  }, [standStats]);
+
+  // Avg turnaround
+  const avgTurnaround = useMemo(() => {
+    return standStats.length > 0
+      ? standStats.reduce((sum, s) => sum + s.avgTurnaroundMin, 0) / standStats.length
+      : 0;
+  }, [standStats]);
+
+  const getStandTypeLabel = (type: string) => {
+    const labels: Record<string, string> = { arr: 'Arrival', dep: 'Departure', mixed: 'Mixed' };
+    return labels[type] || type;
+  };
+
+  const getStandTypeColor = (type: string) => {
+    const colors: Record<string, string> = { arr: '#3b82f6', dep: '#ef4444', mixed: '#10b981' };
+    return colors[type] || '#6b7280';
+  };
+
   return (
-    <div className="space-y-6">
-      {/* Stand Utilization Bar Chart */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-4">
-          🏢 Stand Utilization Overview
+    <div className="space-y-6 p-4 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 rounded-lg">
+      {/* KPI Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900 dark:to-blue-800 rounded-lg shadow-md p-5 border border-blue-200 dark:border-blue-700">
+          <p className="text-sm text-blue-700 dark:text-blue-300 font-bold mb-2">Total Stands</p>
+          <p className="text-4xl font-bold text-blue-900 dark:text-blue-100">{standStats.length}</p>
+        </div>
+        <div className="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900 dark:to-purple-800 rounded-lg shadow-md p-5 border border-purple-200 dark:border-purple-700">
+          <p className="text-sm text-purple-700 dark:text-purple-300 font-bold mb-2">Avg Utilization</p>
+          <p className="text-4xl font-bold text-purple-900 dark:text-purple-100">{avgUtilization.toFixed(1)}%</p>
+        </div>
+        <div className="bg-gradient-to-br from-orange-50 to-orange-100 dark:from-orange-900 dark:to-orange-800 rounded-lg shadow-md p-5 border border-orange-200 dark:border-orange-700">
+          <p className="text-sm text-orange-700 dark:text-orange-300 font-bold mb-2">Avg Turnaround</p>
+          <p className="text-4xl font-bold text-orange-900 dark:text-orange-100">{avgTurnaround.toFixed(0)}</p>
+          <p className="text-xs text-orange-600 dark:text-orange-400 font-semibold">minutes</p>
+        </div>
+        <div className="bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900 dark:to-green-800 rounded-lg shadow-md p-5 border border-green-200 dark:border-green-700">
+          <p className="text-sm text-green-700 dark:text-green-300 font-bold mb-2">Total Flights</p>
+          <p className="text-4xl font-bold text-green-900 dark:text-green-100">
+            {standStats.reduce((sum, s) => sum + s.totalFlights, 0)}
+          </p>
+        </div>
+      </div>
+
+      {/* Stand Utilization Bar Chart - IMPROVED: better visualization */}
+      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-md p-5 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50 mb-4 flex items-center gap-2">
+          🏢 Stand Utilization Overview (Top 15)
+          <span className="text-sm font-normal text-gray-600 dark:text-gray-400">by % and flights</span>
         </h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={utilizationData} layout="vertical">
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis type="number" />
-            <YAxis dataKey="stand" type="category" width={60} />
+        <ResponsiveContainer width="100%" height={380}>
+          <BarChart data={utilizationData} layout="vertical" margin={{ left: 60, right: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis type="number" tick={{ fill: '#6b7280' }} />
+            <YAxis dataKey="stand" type="category" width={50} tick={{ fill: '#6b7280', fontSize: 12 }} />
             <Tooltip 
-              contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
-              formatter={(value: any) => typeof value === 'number' ? (value as number).toFixed(1) : value}
+              contentStyle={{ backgroundColor: '#1f2937', border: '2px solid #8b5cf6', borderRadius: '8px', color: '#fff' }}
+              formatter={(value: any, name: any) => {
+                if (name === 'utilization') return [(value as number).toFixed(1) + '%', 'Utilization'];
+                return [value, 'Flights'];
+              }}
+              labelFormatter={(label) => `Stand ${label}`}
             />
-            <Legend />
-            <Bar dataKey="flights" fill="#8b5cf6" name="Flights" />
-            <Bar dataKey="utilization" fill="#10b981" name="Utilization %" />
+            <Legend wrapperStyle={{ paddingTop: '15px' }} />
+            <Bar dataKey="utilization" fill="#8b5cf6" name="Utilization %" radius={[0, 8, 8, 0]} />
+            <Bar dataKey="flights" fill="#3b82f6" name="Flights" radius={[0, 8, 8, 0]}>
+              {utilizationData.map((entry, index) => (
+                <Cell 
+                  key={`cell-${index}`}
+                  fill={entry.utilization > 60 ? '#ef4444' : entry.utilization > 40 ? '#f59e0b' : '#3b82f6'}
+                />
+              ))}
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Turnaround Time Analysis */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-4">
-          ⏱️ Average Turnaround Time by Stand
+      {/* Turnaround Time Analysis - IMPROVED: better sorting */}
+      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-md p-5 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50 mb-4 flex items-center gap-2">
+          ⏱️ Average Turnaround Time by Stand (Top 12)
+          <span className="text-xs font-normal text-gray-600 dark:text-gray-400">Best to Worst</span>
         </h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={turnaroundData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="stand" />
-            <YAxis label={{ value: 'Minutes', angle: -90, position: 'insideLeft' }} />
+        <ResponsiveContainer width="100%" height={320}>
+          <LineChart data={turnaroundData} margin={{ left: 20, right: 20, top: 10, bottom: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey="stand" tick={{ fill: '#6b7280' }} />
+            <YAxis label={{ value: 'Minutes', angle: -90, position: 'insideLeft', style: { fill: '#6b7280' } }} tick={{ fill: '#6b7280' }} />
             <Tooltip 
-              contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
-              formatter={(value: any) => `${(value as number).toFixed(0)}m`}
+              contentStyle={{ backgroundColor: '#1f2937', border: '2px solid #f97316', borderRadius: '8px', color: '#fff' }}
+              formatter={(value: any) => `${(value as number).toFixed(0)} min`}
+              labelFormatter={(label) => `Stand: ${label}`}
             />
+            <Legend wrapperStyle={{ paddingTop: '15px' }} />
             <Line
               type="monotone"
               dataKey="turnaround"
               stroke="#f97316"
-              strokeWidth={2}
-              dot={{ fill: '#f97316', r: 4 }}
-              activeDot={{ r: 6 }}
+              strokeWidth={3}
+              dot={{ fill: '#f97316', r: 5 }}
+              activeDot={{ r: 7 }}
               name="Turnaround Time"
             />
           </LineChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Hourly Occupancy (Top 5 Stands) */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-4">
-          📅 Hourly Occupancy (Top 5 Stands)
+      {/* Hourly Occupancy (Top 8 Stands) - IMPROVED: stacked and better colors */}
+      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-md p-5 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50 mb-4">
+          📅 Hourly Stand Occupancy (Top 8)
         </h3>
         <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={hourlyOccupancy}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="hour" />
-            <YAxis label={{ value: 'Minutes', angle: -90, position: 'insideLeft' }} />
+          <BarChart data={hourlyOccupancy} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis dataKey="hour" tick={{ fill: '#6b7280' }} />
+            <YAxis label={{ value: 'Minutes', angle: -90, position: 'insideLeft', style: { fill: '#6b7280' } }} tick={{ fill: '#6b7280' }} />
             <Tooltip 
-              contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+              contentStyle={{ backgroundColor: '#1f2937', border: '2px solid #8b5cf6', borderRadius: '8px', color: '#fff' }}
               formatter={(value: any) => `${(value as number).toFixed(0)}m`}
             />
-            <Legend />
-            {standStats.slice(0, 5).map((stand, idx) => (
+            <Legend wrapperStyle={{ paddingTop: '15px' }} />
+            {standStats.slice(0, 8).map((stand, idx) => (
               <Bar
                 key={stand.standId}
                 dataKey={stand.standId}
                 stackId="a"
-                fill={['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'][idx]}
+                fill={['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#6366f1'][idx]}
+                name={stand.standId}
               />
             ))}
           </BarChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Stand Type Distribution */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {typeDistribution.map((item) => (
-          <div key={item.type} className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">{item.type}</p>
-            <p className="text-3xl font-bold text-gray-800 dark:text-gray-100">{item.count}</p>
-          </div>
-        ))}
+      {/* Stand Type Distribution - IMPROVED: better layout */}
+      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-md p-5 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50 mb-4">
+          🏷️ Stand Type Distribution
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {typeDistribution.map((item) => (
+            <div key={item.type} className="rounded-lg p-5 text-center border-l-4 shadow-md transition hover:shadow-lg" style={{ borderColor: item.color, backgroundColor: item.color + '10' }}>
+              <p className="text-sm font-bold mb-2" style={{ color: item.color }}>{item.type}</p>
+              <p className="text-5xl font-bold mb-2" style={{ color: item.color }}>
+                {item.count}
+              </p>
+              <p className="text-sm" style={{ color: item.color }}>
+                ({((item.count / standStats.length) * 100).toFixed(1)}%)
+              </p>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Detailed Stand Statistics Table */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-4">
-          📊 Stand Statistics
+      {/* Stand Statistics Table - IMPROVED: comprehensive details */}
+      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-md p-5 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-50 mb-4 flex items-center gap-2">
+          📊 Detailed Stand Statistics
+          <span className="text-xs font-normal text-gray-600 dark:text-gray-400">Sorted by flights</span>
         </h3>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-100 dark:bg-gray-700 border-b border-gray-300 dark:border-gray-600">
-                <th className="px-3 py-2 text-left text-gray-700 dark:text-gray-300">Stand</th>
-                <th className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">Type</th>
-                <th className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">Flights</th>
-                <th className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">Utilization</th>
-                <th className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">Avg Time</th>
-                <th className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">Turnaround</th>
-                <th className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">Peak Hour</th>
-                <th className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">Conflicts</th>
+            <thead className="bg-gray-200 dark:bg-gray-800">
+              <tr>
+                <th className="px-4 py-3 text-left text-gray-900 dark:text-gray-100 font-bold">Stand</th>
+                <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Type</th>
+                <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Flights</th>
+                <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Util %</th>
+                <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Turnaround</th>
+                <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Conflicts</th>
+                <th className="px-4 py-3 text-center text-gray-900 dark:text-gray-100 font-bold">Peak Hour</th>
               </tr>
             </thead>
             <tbody>
-              {standStats.slice(0, 20).map((stand) => (
-                <tr key={stand.standId} className="border-b border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700">
-                  <td className="px-3 py-2 font-semibold text-gray-800 dark:text-gray-200">{stand.standId}</td>
-                  <td className="px-3 py-2 text-center">
-                    <span className="inline-block px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 text-xs rounded">
-                      {stand.standType === 'arr' ? 'ARR' : stand.standType === 'dep' ? 'DEP' : 'A/D'}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">{stand.totalFlights}</td>
-                  <td className="px-3 py-2 text-center">
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="w-16 h-2 bg-gray-200 dark:bg-gray-600 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-purple-500"
-                          style={{ width: `${Math.min((stand.totalUtilizationMin / (24 * 60)) * 100, 100)}%` }}
-                        />
-                      </div>
-                      <span className="text-gray-700 dark:text-gray-300 text-xs w-12">
-                        {((stand.totalUtilizationMin / (24 * 60)) * 100).toFixed(1)}%
+              {standStats.map((stand) => {
+                const utilPercent = stand.utilizationPercent;
+                return (
+                  <tr key={stand.standId} className="border-b border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition\">
+                    <td className="px-4 py-3 font-bold text-gray-900 dark:text-gray-100">{stand.standId}</td>
+                    <td className="px-4 py-3 text-center">
+                      <span 
+                        className="inline-block px-3 py-1 rounded-full text-xs font-bold text-white"
+                        style={{ backgroundColor: getStandTypeColor(stand.standType) }}
+                      >
+                        {getStandTypeLabel(stand.standType)}
                       </span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">
-                    {stand.avgUtilizationMin.toFixed(0)}m
-                  </td>
-                  <td className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">
-                    {stand.avgTurnaroundMin.toFixed(0)}m
-                  </td>
-                  <td className="px-3 py-2 text-center text-gray-700 dark:text-gray-300">
-                    {stand.peakHour}:00
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    {stand.conflicts > 0 ? (
-                      <span className="inline-block px-2 py-1 bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 text-xs font-semibold rounded">
-                        {stand.conflicts}
+                    </td>
+                    <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300 font-semibold">{stand.totalFlights}</td>
+                    <td className="px-4 py-3 text-center">
+                      <span className={utilPercent > 60 ? 'text-red-600 dark:text-red-400 font-bold' : utilPercent > 40 ? 'text-orange-600 dark:text-orange-400 font-semibold' : 'text-green-600 dark:text-green-400'}>
+                        {utilPercent.toFixed(1)}%
                       </span>
-                    ) : (
-                      <span className="text-gray-500 dark:text-gray-400">-</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300 font-semibold">
+                      {stand.avgTurnaroundMin.toFixed(0)} m
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {stand.conflicts > 0 ? (
+                        <span className="inline-block bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 px-3 py-1 rounded-full text-xs font-bold">
+                          {stand.conflicts} ⚠️
+                        </span>
+                      ) : (
+                        <span className="text-green-600 dark:text-green-400 font-semibold">✓ None</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300 font-semibold">
+                      {String(stand.peakHour).padStart(2, '0')}:00
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

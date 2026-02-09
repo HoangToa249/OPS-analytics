@@ -23,7 +23,7 @@ import {
   fetchAllFlightDataForExport,
 } from '../utils/flightDataService';
 import { exportToExcel, exportToCSV, getDefaultColumns, getAvailableColumns } from '../utils/exportService';
-import { fmtDateUTC, fmtTimeUTC } from '../utils/dateUtils';
+import { fmtDateUTC, fmtTimeUTC, parseDbDate } from '../utils/dateUtils';
 
 const PAGE_SIZE = 100;
 
@@ -144,9 +144,9 @@ const FlightDataTable: React.FC = () => {
     // Check if it's a valid ISO date string (contains T and looks like a date)
     if (stringValue.includes('T') && /^\d{4}-\d{2}-\d{2}T/.test(stringValue)) {
       try {
-        const date = new Date(stringValue);
+        const date = parseDbDate(stringValue);
         // Only format as date if the date is valid
-        if (!isNaN(date.getTime())) {
+        if (date && !isNaN(date.getTime())) {
           return `${fmtDateUTC(date)} ${fmtTimeUTC(date)}`;
         }
       } catch {

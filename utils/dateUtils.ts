@@ -1,3 +1,10 @@
+/**
+ * Get browser's timezone offset in milliseconds
+ */
+const getTimezoneOffsetMs = (): number => {
+  return new Date().getTimezoneOffset() * 60 * 1000;
+};
+
 export const parseExcelDate = (v: any, fmt: string, fixTz: boolean): Date | null => {
   if (v === undefined || v === null || v === '') return null;
   
@@ -46,7 +53,44 @@ export const parseExcelDate = (v: any, fmt: string, fixTz: boolean): Date | null
     return null;
   }
 
+  // Apply timezone fix if enabled (add timezone offset to compensate)
+  if (fixTz && dt && !isNaN(dt.getTime())) {
+    const offsetMs = getTimezoneOffsetMs();
+    dt = new Date(dt.getTime() + offsetMs);
+  }
+
   return (dt && !isNaN(dt.getTime())) ? dt : null;
+};
+
+/**
+ * Parse database date string - treats naive timestamps as UTC
+ * Ensures consistent UTC interpretation regardless of browser timezone
+ */
+export const parseDbDate = (dateString: string | null | undefined): Date | null => {
+  if (!dateString) return null;
+  
+  try {
+    const str = String(dateString).trim();
+    
+    // If it ends with Z, it's already UTC-marked - return as-is
+    if (str.endsWith('Z')) {
+      const dt = new Date(str);
+      return !isNaN(dt.getTime()) ? dt : null;
+    }
+    
+    // If ISO format without Z or timezone offset, add Z to force UTC interpretation
+    if (str.includes('T') && !str.includes('+') && !str.includes('-', 10)) {
+      const dt = new Date(str + 'Z');
+      return !isNaN(dt.getTime()) ? dt : null;
+    }
+    
+    // Otherwise standard parse
+    const dt = new Date(str);
+    return !isNaN(dt.getTime()) ? dt : null;
+  } catch (e) {
+    console.warn('DB date parse error:', dateString);
+    return null;
+  }
 };
 
 export const toISOLocal = (d: Date): string => {

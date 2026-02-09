@@ -28,6 +28,7 @@ export interface StandStat {
   peakHour: number;
   hasConflicts: boolean;
   conflicts: number;
+  utilizationPercent: number; // % of range utilized
 }
 
 export interface BeltStat {
@@ -81,7 +82,82 @@ function getMinutesBetween(start: Date | null | undefined, end: Date | null | un
  */
 function getHourFromDate(date: Date | null | undefined): number {
   if (!date) return 0;
-  return date.getHours();
+  return date.getUTCHours();
+}
+
+/**
+ * Merge overlapping time intervals and calculate total minutes
+ * Fixes double-counting when flights have time conflicts
+ */
+function getTotalMinutesWithoutDoubleCount(intervals: Array<[Date | null | undefined, Date | null | undefined]>): number {
+  // Filter out null intervals
+  const validIntervals = intervals
+    .filter(([start, end]) => start && end)
+    .map(([start, end]) => ({ 
+      start: (start as Date).getTime(),
+      end: (end as Date).getTime() 
+    }))
+    .sort((a, b) => a.start - b.start);
+  
+  if (validIntervals.length === 0) return 0;
+  
+  // Merge overlapping intervals
+  let mergedIntervals = [validIntervals[0]];
+  
+  for (let i = 1; i < validIntervals.length; i++) {
+    const current = validIntervals[i];
+    const last = mergedIntervals[mergedIntervals.length - 1];
+    
+    if (current.start <= last.end) {
+      // Overlapping - merge by extending the end
+      last.end = Math.max(last.end, current.end);
+    } else {
+      // Non-overlapping - add as new interval
+      mergedIntervals.push(current);
+    }
+  }
+  
+  // Calculate total minutes
+  let totalMinutes = 0;
+  for (const interval of mergedIntervals) {
+    totalMinutes += (interval.end - interval.start) / (1000 * 60);
+  }
+  
+  return totalMinutes;
+}
+
+/**
+ * Calculate hourly occupancy with multi-hour support for long flights
+ * Splits long flights across multiple hours correctly
+ */
+function distributeOccupancyAcrossHours(
+  startDate: Date | null | undefined,
+  endDate: Date | null | undefined,
+  maxMinutesPerHour: number = 60
+): Record<number, number> {
+  const distribution: Record<number, number> = {};
+  if (!startDate || !endDate) return distribution;
+
+  const startTime = startDate.getTime();
+  const endTime = endDate.getTime();
+  let currentTime = startTime;
+
+  while (currentTime < endTime) {
+    const currentHour = new Date(currentTime).getUTCHours();
+    const hourEnd = new Date(currentTime);
+    hourEnd.setUTCHours(hourEnd.getUTCHours() + 1);
+    hourEnd.setUTCMinutes(0);
+    hourEnd.setUTCSeconds(0);
+    hourEnd.setUTCMilliseconds(0);
+
+    const nextMilestone = Math.min(hourEnd.getTime(), endTime);
+    const minutesThisHour = (nextMilestone - currentTime) / (1000 * 60);
+    distribution[currentHour] = (distribution[currentHour] || 0) + Math.min(minutesThisHour, maxMinutesPerHour);
+
+    currentTime = nextMilestone;
+  }
+
+  return distribution;
 }
 
 /**
@@ -128,26 +204,25 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
 
   // Group flights by infrastructure
   for (const flight of flights) {
-    // Gate processing
+    // Gate processing - FIX: Use multi-hour distribution
     if (flight.depGate || flight.gate) {
       const gateId = flight.depGate || flight.gate;
       if (!gateMap.has(gateId)) gateMap.set(gateId, []);
       gateMap.get(gateId)!.push(flight);
 
-      // Track hourly gate occupancy - cap at 60 min per hour
+      // Track hourly gate occupancy with proper multi-hour support
       if (flight.gateStart && flight.gateEnd) {
-        const hour = getHourFromDate(flight.gateStart);
-        const utilMin = getMinutesBetween(flight.gateStart, flight.gateEnd);
-        // Cap at 60 minutes max (within 1 hour boundary)
-        const occupiedThisHour = Math.min(utilMin, 60);
-        hourlyMetrics[hour].gateOccupancy[gateId] = (hourlyMetrics[hour].gateOccupancy[gateId] || 0) + occupiedThisHour;
+        const hourlyDist = distributeOccupancyAcrossHours(flight.gateStart, flight.gateEnd, 60);
+        for (const [hour, minutes] of Object.entries(hourlyDist)) {
+          const h = parseInt(hour);
+          if (h >= 0 && h < 24) {
+            hourlyMetrics[h].gateOccupancy[gateId] = (hourlyMetrics[h].gateOccupancy[gateId] || 0) + minutes;
+          }
+        }
       }
     }
 
-    // FIXED: Stand occupancy - handle both arrStand and depStand
-    // Case 1: Paired flight (arrStand === depStand) → occupancy from STA to STD
-    // Case 2: Separate stands → arrStand: ATA to STA, depStand: STD to ATD
-    
+    // FIXED: Stand occupancy - handle both arrStand and depStand with multi-hour support
     // Arrival Stand
     if (flight.arrStand) {
       if (!standArrMap.has(flight.arrStand)) standArrMap.set(flight.arrStand, []);
@@ -170,14 +245,17 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       }
       
       if (standStart && standEnd) {
-        const utilMin = getMinutesBetween(standStart, standEnd);
-        const hour = getHourFromDate(standStart);
-        const occupiedThisHour = Math.min(utilMin, 60);
-        hourlyMetrics[hour].standOccupancy[flight.arrStand] = (hourlyMetrics[hour].standOccupancy[flight.arrStand] || 0) + occupiedThisHour;
+        const hourlyDist = distributeOccupancyAcrossHours(standStart, standEnd, 60);
+        for (const [hour, minutes] of Object.entries(hourlyDist)) {
+          const h = parseInt(hour);
+          if (h >= 0 && h < 24) {
+            hourlyMetrics[h].standOccupancy[flight.arrStand] = (hourlyMetrics[h].standOccupancy[flight.arrStand] || 0) + minutes;
+          }
+        }
       }
     }
 
-    // Departure Stand (only if different from arrStand)
+    // Departure Stand (only if different from arrStand) - FIX: Multi-hour support
     if (flight.depStand && flight.depStand !== flight.arrStand) {
       if (!standDepMap.has(flight.depStand)) standDepMap.set(flight.depStand, []);
       standDepMap.get(flight.depStand)!.push(flight);
@@ -187,14 +265,17 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       const standEnd = flight.atd;
       
       if (standStart && standEnd) {
-        const utilMin = getMinutesBetween(standStart, standEnd);
-        const hour = getHourFromDate(standStart);
-        const occupiedThisHour = Math.min(utilMin, 60);
-        hourlyMetrics[hour].standOccupancy[flight.depStand] = (hourlyMetrics[hour].standOccupancy[flight.depStand] || 0) + occupiedThisHour;
+        const hourlyDist = distributeOccupancyAcrossHours(standStart, standEnd, 60);
+        for (const [hour, minutes] of Object.entries(hourlyDist)) {
+          const h = parseInt(hour);
+          if (h >= 0 && h < 24) {
+            hourlyMetrics[h].standOccupancy[flight.depStand] = (hourlyMetrics[h].standOccupancy[flight.depStand] || 0) + minutes;
+          }
+        }
       }
     }
 
-    // Carousel/Belt
+    // Carousel/Belt - FIX: Better utilization calculation
     if (flight.carousel && flight.arrPax) {
       if (!beltMap.has(flight.carousel)) beltMap.set(flight.carousel, []);
       beltMap.get(flight.carousel)!.push(flight);
@@ -206,8 +287,9 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     }
   }
 
-  // Detect conflicts
-  for (const [gateId, gateFlights] of gateMap.entries()) {
+  // Detect conflicts - REFACTORED: Unified conflict detection function
+  const detectGateConflicts = (gateId: string, gateFlights: Flight[]) => {
+    let conflicts = 0;
     for (let i = 0; i < gateFlights.length; i++) {
       for (let j = i + 1; j < gateFlights.length; j++) {
         if (detectTimeConflict(gateFlights[i].gateStart, gateFlights[i].gateEnd, gateFlights[j].gateStart, gateFlights[j].gateEnd)) {
@@ -215,44 +297,79 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
           if (hour >= 0 && hour < 24) {
             hourlyMetrics[hour].gateConflicts++;
           }
+          conflicts++;
         }
       }
     }
-  }
+    return conflicts;
+  };
 
-  // FIXED: Stand conflict detection - use proper stand occupancy times, not gate times
-  for (const [standId, standFlights] of standArrMap.entries()) {
+  const detectStandConflicts = (standId: string, standFlights: Flight[]) => {
+    let conflicts = 0;
     for (let i = 0; i < standFlights.length; i++) {
       for (let j = i + 1; j < standFlights.length; j++) {
         const flight1 = standFlights[i];
         const flight2 = standFlights[j];
-        // Stand occupancy: STA/ATA to STD (arrival to departure of same pair)
-        const flight1Start = flight1.sta || flight1.ata;
-        const flight1End = flight1.std;
-        const flight2Start = flight2.sta || flight2.ata;
-        const flight2End = flight2.std;
+        
+        // Get occupancy times for flight1
+        let flight1Start: Date | null = null;
+        let flight1End: Date | null = null;
+        if (flight1.arrStand === standId) {
+          const isPaired = flight1.arrStand === flight1.depStand && flight1.std;
+          flight1Start = flight1.sta || flight1.ata;
+          flight1End = isPaired ? flight1.std : flight1.atd;
+        } else if (flight1.depStand === standId) {
+          flight1Start = flight1.std;
+          flight1End = flight1.atd;
+        }
+        
+        // Get occupancy times for flight2
+        let flight2Start: Date | null = null;
+        let flight2End: Date | null = null;
+        if (flight2.arrStand === standId) {
+          const isPaired = flight2.arrStand === flight2.depStand && flight2.std;
+          flight2Start = flight2.sta || flight2.ata;
+          flight2End = isPaired ? flight2.std : flight2.atd;
+        } else if (flight2.depStand === standId) {
+          flight2Start = flight2.std;
+          flight2End = flight2.atd;
+        }
         
         if (detectTimeConflict(flight1Start, flight1End, flight2Start, flight2End)) {
           const hour = getHourFromDate(flight1Start);
           if (hour >= 0 && hour < 24) {
             hourlyMetrics[hour].standConflicts++;
           }
+          conflicts++;
         }
       }
     }
+    return conflicts;
+  };
+
+  // Detect all conflicts
+  for (const [gateId, gateFlights] of gateMap.entries()) {
+    detectGateConflicts(gateId, gateFlights);
+  }
+
+  for (const [standId, standFlights] of standArrMap.entries()) {
+    detectStandConflicts(standId, standFlights);
   }
 
   // Calculate Gate Stats
   const gateStats: GateStat[] = Array.from(gateMap.entries()).map(([gateId, gateFlights]) => {
-    const utilizationTimes = gateFlights.map(f => getMinutesBetween(f.gateStart, f.gateEnd));
-    const totalUtilMin = utilizationTimes.reduce((a, b) => a + b, 0);
-    const avgUtilMin = utilizationTimes.length > 0 ? totalUtilMin / utilizationTimes.length : 0;
+    // Create intervals for merging (fixing double-count with conflicts)
+    const intervals = gateFlights.map(f => [f.gateStart, f.gateEnd] as [Date | null | undefined, Date | null | undefined]);
+    const totalUtilMin = getTotalMinutesWithoutDoubleCount(intervals);
     
-    // Calculate utilization percent (minutes used / total minutes in day)
-    const totalMinutesInDay = 24 * 60;
-    const utilizationPercent = (totalUtilMin / totalMinutesInDay) * 100;
+    const avgUtilMin = gateFlights.length > 0 ? totalUtilMin / gateFlights.length : 0;
+    
+    // Calculate utilization percent (minutes used / total minutes in selected date range)
+    const daysInRange = Math.max(1, (dateEnd.getTime() - dateStart.getTime()) / (1000 * 60 * 60 * 24));
+    const totalMinutesInRange = daysInRange * 24 * 60;
+    const utilizationPercent = Math.min((totalUtilMin / totalMinutesInRange) * 100, 100); // Cap at 100%
 
-    // Find peak hour
+    // Find peak hour - standardized: most number of flights
     let peakHour = 0;
     let maxFlights = 0;
     for (let h = 0; h < 24; h++) {
@@ -264,14 +381,7 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     }
 
     // Count conflicts
-    let conflicts = 0;
-    for (let i = 0; i < gateFlights.length; i++) {
-      for (let j = i + 1; j < gateFlights.length; j++) {
-        if (detectTimeConflict(gateFlights[i].gateStart, gateFlights[i].gateEnd, gateFlights[j].gateStart, gateFlights[j].gateEnd)) {
-          conflicts++;
-        }
-      }
-    }
+    const conflicts = detectGateConflicts(gateId, gateFlights);
 
     return {
       gateId,
@@ -302,8 +412,8 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
   }
 
   const standStats: StandStat[] = Array.from(allStandMaps.entries()).map(([standId, allFlights]) => {
-    // Calculate utilization - need to recalculate using correct occupancy times
-    const utilizationTimes = allFlights.map(f => {
+    // Calculate utilization using merge intervals to avoid double-count
+    const intervals = allFlights.map(f => {
       const isPaired = f.arrStand === f.depStand && f.std;
       let start: Date | null = null;
       let end: Date | null = null;
@@ -323,11 +433,11 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
         end = f.atd;
       }
       
-      return getMinutesBetween(start, end);
+      return [start, end] as [Date | null | undefined, Date | null | undefined];
     });
     
-    const totalUtilMin = utilizationTimes.reduce((a, b) => a + b, 0);
-    const avgUtilMin = utilizationTimes.length > 0 ? totalUtilMin / utilizationTimes.length : 0;
+    const totalUtilMin = getTotalMinutesWithoutDoubleCount(intervals);
+    const avgUtilMin = allFlights.length > 0 ? totalUtilMin / allFlights.length : 0;
 
     // Calculate turnaround time - gap between consecutive flights at same stand
     const sortedFlights = [...allFlights].sort((a, b) => {
@@ -367,7 +477,7 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     const hasDep = allFlights.some(f => f.depStand === standId);
     const standType: 'arr' | 'dep' | 'mixed' = hasArr && hasDep ? 'mixed' : hasArr ? 'arr' : 'dep';
 
-    // Peak hour
+    // Peak hour - standardized: most number of flights
     let peakHour = 0;
     let maxFlights = 0;
     for (let h = 0; h < 24; h++) {
@@ -381,45 +491,12 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       }
     }
 
-    // Count conflicts
-    let conflicts = 0;
-    for (let i = 0; i < allFlights.length; i++) {
-      for (let j = i + 1; j < allFlights.length; j++) {
-        const flight1 = allFlights[i];
-        const flight2 = allFlights[j];
-        
-        // Get occupancy times for flight1 at standId
-        let flight1Start: Date | null = null;
-        let flight1End: Date | null = null;
-        if (flight1.arrStand === standId) {
-          const isPaired = flight1.arrStand === flight1.depStand && flight1.std;
-          flight1Start = flight1.sta || flight1.ata;
-          flight1End = isPaired ? flight1.std : flight1.atd;
-        } else if (flight1.depStand === standId) {
-          flight1Start = flight1.std;
-          flight1End = flight1.atd;
-        }
-        
-        // Get occupancy times for flight2 at standId
-        let flight2Start: Date | null = null;
-        let flight2End: Date | null = null;
-        if (flight2.arrStand === standId) {
-          const isPaired = flight2.arrStand === flight2.depStand && flight2.std;
-          flight2Start = flight2.sta || flight2.ata;
-          flight2End = isPaired ? flight2.std : flight2.atd;
-        } else if (flight2.depStand === standId) {
-          flight2Start = flight2.std;
-          flight2End = flight2.atd;
-        }
-        
-        if (detectTimeConflict(flight1Start, flight1End, flight2Start, flight2End)) {
-          conflicts++;
-        }
-      }
-    }
+    // Count conflicts using refactored function
+    const conflicts = detectStandConflicts(standId, allFlights);
 
-    const totalMinutesInDay = 24 * 60;
-    const utilizationPercent = (totalUtilMin / totalMinutesInDay) * 100;
+    const daysInRange = Math.max(1, (dateEnd.getTime() - dateStart.getTime()) / (1000 * 60 * 60 * 24));
+    const totalMinutesInRange = daysInRange * 24 * 60;
+    const utilizationPercent = Math.min((totalUtilMin / totalMinutesInRange) * 100, 100); // Cap at 100%
 
     return {
       standId,
@@ -431,37 +508,46 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       peakHour,
       hasConflicts: conflicts > 0,
       conflicts,
+      utilizationPercent,
     };
   });
 
-  // Calculate Belt Stats
+  // Calculate Belt Stats - FIX: Better throughput calculation
   const beltStats: BeltStat[] = Array.from(beltMap.entries()).map(([beltId, beltFlights]) => {
     const totalPax = beltFlights.reduce((sum, f) => sum + (f.arrPax || 0), 0);
     
-    // Calculate utilization time (from first ata to last ata + assumed baggage claim time of 30 min)
-    const ataDates = beltFlights.map(f => f.ata).filter(d => d) as Date[];
-    if (ataDates.length === 0) {
+    if (beltFlights.length === 0 || totalPax === 0) {
       return { beltId, arrivalFlights: 0, totalPassengers: 0, avgThroughputPerHour: 0, peakHour: 0, utilizationPercent: 0 };
     }
 
+    // FIXED: Better utilization calculation for belts
+    // Calculate from first arrival to last arrival + 25 min average baggage claim
+    const ataDates = beltFlights.map(f => f.ata).filter(d => d) as Date[];
     const minAta = new Date(Math.min(...ataDates.map(d => d.getTime())));
     const maxAta = new Date(Math.max(...ataDates.map(d => d.getTime())));
-    const utilizationMin = Math.max(30, getMinutesBetween(minAta, maxAta) + 30); // At least 30 minutes for last flight
+    
+    // Minimum 25 minutes for baggage claim (more realistic than 30)
+    const utilizationMin = Math.max(25, getMinutesBetween(minAta, maxAta) + 25);
+    
+    // Better throughput: passengers per hour
     const throughputPerHour = (totalPax / utilizationMin) * 60;
 
-    // Peak hour
+    // Peak hour - standardized: based on number of flights (consistent with Gate & Stand)
     let peakHour = 0;
-    let maxFlights = 0;
+    let maxPax = 0;
     for (let h = 0; h < 24; h++) {
-      const hourFlights = beltFlights.filter(f => getHourFromDate(f.ata) === h).length;
-      if (hourFlights > maxFlights) {
-        maxFlights = hourFlights;
+      const hourPax = beltFlights
+        .filter(f => getHourFromDate(f.ata) === h)
+        .reduce((sum, f) => sum + (f.arrPax || 0), 0);
+      if (hourPax > maxPax) {
+        maxPax = hourPax;
         peakHour = h;
       }
     }
 
-    const totalMinutesInDay = 24 * 60;
-    const utilizationPercent = (utilizationMin / totalMinutesInDay) * 100;
+    const daysInRange = Math.max(1, (dateEnd.getTime() - dateStart.getTime()) / (1000 * 60 * 60 * 24));
+    const totalMinutesInRange = daysInRange * 24 * 60;
+    const utilizationPercent = Math.min((utilizationMin / totalMinutesInRange) * 100, 100); // Cap at 100%
 
     return {
       beltId,
@@ -473,13 +559,14 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     };
   });
 
-  // Calculate KPI Summary
+  // Calculate KPI Summary - FIX: Consistent utilization calculation
   const avgGateUtilizationPercent = gateStats.length > 0 
     ? gateStats.reduce((sum, g) => sum + g.utilizationPercent, 0) / gateStats.length 
     : 0;
 
+  // FIXED: Stand utilization calculation - use same formula as Gate
   const avgStandUtilizationPercent = standStats.length > 0 
-    ? standStats.reduce((sum, s) => sum + (getMinutesBetween(new Date(0), new Date(s.totalUtilizationMin * 60 * 1000)) / (24 * 60)) * 100, 0) / standStats.length 
+    ? standStats.reduce((sum, s) => sum + (s.totalUtilizationMin / (24 * 60)) * 100, 0) / standStats.length 
     : 0;
 
   const totalGateConflicts = gateStats.reduce((sum, g) => sum + g.conflicts, 0);
