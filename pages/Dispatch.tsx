@@ -282,8 +282,8 @@ const Dispatch: React.FC = () => {
       // - an array of {ctr, start, end}
       // - an array of strings ["C01","C02"]
       // - a JSON string (stringified array)
-      // - a comma-separated string: "C40, C41, C42"
-      const normalizeCounters = (raw: any): any[] => {
+      // - a comma-separated string: "C40, C41, C42" (external format)
+      const normalizeCounters = (raw: any, targetDate: Date): any[] => {
         if (!raw && raw !== 0) return [];
 
         try {
@@ -302,9 +302,18 @@ const Dispatch: React.FC = () => {
                 return [];
               }
             } else {
-              // Accept comma-separated values like "C01, C02"
+              // Accept comma-separated values like "C31, C32, C33" (external format)
+              // FIX: Convert to objects with start/end times based on targetDate
               const parts = s.split(',').map(x => x.trim()).filter(x => x.length > 0);
-              if (parts.length > 0) return parts;
+              if (parts.length > 0) {
+                const defStart = new Date(targetDate.getTime() - 180 * 60000); // 3 hours before
+                const defEnd = new Date(targetDate.getTime() - 50 * 60000);   // 50 min before
+                return parts.map(ctr => ({
+                  ctr: ctr.trim().toUpperCase(),
+                  start: defStart.toISOString(),
+                  end: defEnd.toISOString()
+                }));
+              }
               console.warn('[normalizeCounters] String is not JSON and not comma-separated, skipping:', s);
               return [];
             }
@@ -350,7 +359,7 @@ const Dispatch: React.FC = () => {
         }
       };
 
-      const rawCounters = normalizeCounters(row.counters);
+      const rawCounters = normalizeCounters(row.counters, targetDate);
       console.log('[mapDbToFlight] rawCounters normalized:', rawCounters);
 
       rawCounters.forEach((c: any) => {
