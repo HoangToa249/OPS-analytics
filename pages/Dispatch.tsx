@@ -238,14 +238,13 @@ const Dispatch: React.FC = () => {
   // Store exactly as provided, without timezone conversion
   // Database stores as "timestamp without time zone" so we preserve exact values
   const formatDateToTextTimestamp = (date: Date): string => {
-    // ✅ FIX: Use local getters if data was parsed as local time
-    // NOT UTC getters to avoid -7 hour shift
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hour = String(date.getHours()).padStart(2, '0');
-    const minute = String(date.getMinutes()).padStart(2, '0');
-    const second = String(date.getSeconds()).padStart(2, '0');
+    // ✅ FIX: Use UTC getters to preserve exact time without timezone shift
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    const hour = String(date.getUTCHours()).padStart(2, '0');
+    const minute = String(date.getUTCMinutes()).padStart(2, '0');
+    const second = String(date.getUTCSeconds()).padStart(2, '0');
     return `${year}-${month}-${day} ${hour}:${minute}:${second}+00`;
   };
 
@@ -273,6 +272,11 @@ const Dispatch: React.FC = () => {
         if ((!targetDate || isNaN(targetDate.getTime())) && row.std) {
             const d = new Date(row.std as string);
             if (!isNaN(d.getTime())) targetDate = d;
+        }
+        // Final fallback: use today's date if all else fails
+        if (!targetDate || isNaN(targetDate.getTime())) {
+            targetDate = new Date();
+            console.warn('[mapDbToFlight] No valid targetDate found, using today:', targetDate);
         }
 
 
@@ -308,11 +312,16 @@ const Dispatch: React.FC = () => {
               if (parts.length > 0) {
                 const defStart = new Date(targetDate.getTime() - 180 * 60000); // 3 hours before
                 const defEnd = new Date(targetDate.getTime() - 50 * 60000);   // 50 min before
-                return parts.map(ctr => ({
-                  ctr: ctr.trim().toUpperCase(),
-                  start: defStart.toISOString(),
-                  end: defEnd.toISOString()
-                }));
+                return parts.map(ctr => {
+                  const normalized = ctr.trim().toUpperCase();
+                  // Extract counter number: "C19" -> "19", "M02" -> "M02"
+                  const counterNum = normalized.replace(/^C/, '');
+                  return {
+                    ctr: counterNum,
+                    start: defStart.toISOString(),
+                    end: defEnd.toISOString()
+                  };
+                });
               }
               console.warn('[normalizeCounters] String is not JSON and not comma-separated, skipping:', s);
               return [];
@@ -346,7 +355,10 @@ const Dispatch: React.FC = () => {
                 console.warn('[normalizeCounters] End date invalida:', item.end);
                 return;
               }
-              valid.push({ctr: item.ctr.trim().toUpperCase(), start: item.start, end: item.end});
+              // Extract counter number: "C19" -> "19", "M02" -> "M02"
+              const normalized = item.ctr.trim().toUpperCase();
+              const counterNum = normalized.replace(/^C/, '');
+              valid.push({ctr: counterNum, start: item.start, end: item.end});
             } catch (err) {
               console.warn('[normalizeCounters] Erro processando item:', item, err);
             }
@@ -377,7 +389,9 @@ const Dispatch: React.FC = () => {
               parsedCheckin.push({ ctr: ctr, start: defStart, end: defEnd });
             }
           } else if (typeof c === 'string') {
-            const ctr = c;
+            // Extract counter number: "C19" -> "19", "M02" -> "M02"
+            const normalized = c.toUpperCase();
+            const ctr = normalized.replace(/^C/, '');
             const defStart = new Date(targetDate.getTime() - 180 * 60000);
             const defEnd = new Date(targetDate.getTime() - 50 * 60000);
             parsedCheckin.push({ ctr, start: defStart, end: defEnd });

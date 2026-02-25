@@ -5,58 +5,125 @@ const getTimezoneOffsetMs = (): number => {
   return new Date().getTimezoneOffset() * 60 * 1000;
 };
 
-export const parseExcelDate = (v: any, fmt: string, fixTz: boolean): Date | null => {
+export const parseExcelDate = (v: any, fmt: string, fixTz?: boolean): Date | null => {
   if (v === undefined || v === null || v === '') return null;
   
   let dt: Date | null = null;
   
   try {
     if (typeof v === 'number') {
-      // Excel serial date (days since Dec 30 1899)
-      const utc_days  = Math.floor(v - 25569);
-      const utc_value = utc_days * 86400;                                        
-      const date_info = new Date(utc_value * 1000);
+      // Excel serial date: days since 1899-12-30
+      // When fixTz=true, interpret as LOCAL time (Vietnam UTC+7)
+      // When fixTz=false, interpret as UTC
       
-      const fractional_day = v - Math.floor(v) + 0.0000001;
-      let total_seconds = Math.floor(86400 * fractional_day);
-      const seconds = total_seconds % 60;
-      total_seconds -= seconds;
+      // Convert Excel serial to Date components
+      // First convert to UTC date, then extract components
+      const ms = (v - 25569) * 86400 * 1000;
+      const tempDate = new Date(ms);
       
-      const hours = Math.floor(total_seconds / (60 * 60));
-      const minutes = Math.floor(total_seconds / 60) % 60;
+      // Extract UTC components (what Excel date represents in UTC)
+      const year = tempDate.getUTCFullYear();
+      const month = tempDate.getUTCMonth();
+      const day = tempDate.getUTCDate();
+      const hour = tempDate.getUTCHours();
+      const minute = tempDate.getUTCMinutes();
+      const second = tempDate.getUTCSeconds();
       
-      dt = new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate(), hours, minutes, seconds);
+      if (fixTz) {
+        // Excel serial represents LOCAL time, so create Date in local timezone
+        // Components from UTC calculation now become LOCAL time components
+        dt = new Date(year, month, day, hour, minute, second);
+        
+        // Debug
+        if ((day === 12 || day === 13) && month === 1) {
+          console.log(`[parseExcelDate] Excel serial ${v} -> UTC calc: ${year}-${month+1}-${day} ${hour}:${minute} -> as LOCAL time: ${dt.toLocaleString()}`);
+        }
+      } else {
+        // Treat as UTC (original behavior)
+        dt = new Date(ms);
+      }
     } else {
       const s = String(v).trim();
       
-      // Regex for DD/MM/YYYY HH:mm (e.g., 01/01/2025 9:05 or 13/05/2025 14:00)
-      const dmyRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
-      const match = s.match(dmyRegex);
-
-      if (match) {
-        // Parse DD/MM/YYYY as UTC time (preserving hour from database)
-        const day = parseInt(match[1], 10);
-        const month = parseInt(match[2], 10) - 1; // Month is 0-indexed
-        const year = parseInt(match[3], 10);
-        const hour = match[4] ? parseInt(match[4], 10) : 0;
-        const min = match[5] ? parseInt(match[5], 10) : 0;
-        const sec = match[6] ? parseInt(match[6], 10) : 0;
-        // Use UTC constructor to preserve exact time from database
-        dt = new Date(Date.UTC(year, month, day, hour, min, sec));
+      // Try ISO format first (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+      const isoRegex = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/;
+      const isoMatch = s.match(isoRegex);
+      
+      if (isoMatch) {
+        const year = parseInt(isoMatch[1]);
+        const month = parseInt(isoMatch[2]) - 1;
+        const day = parseInt(isoMatch[3]);
+        const hour = isoMatch[4] ? parseInt(isoMatch[4]) : 0;
+        const min = isoMatch[5] ? parseInt(isoMatch[5]) : 0;
+        const sec = isoMatch[6] ? parseInt(isoMatch[6]) : 0;
+        
+        if (fixTz) {
+          dt = new Date(year, month, day, hour, min, sec);
+          // Debug: log dates on 02/12-02/13
+          if ((day === 12 || day === 13) && month === 1) {
+            console.log(`[parseExcelDate] ISO input "${s}" -> ${year}-${month+1}-${day} ${hour}:${min} (local) -> ${dt.toLocaleString()}`);
+          }
+        } else {
+          dt = new Date(Date.UTC(year, month, day, hour, min, sec));
+        }
       } else {
-        // Fallback to standard parser
-        dt = new Date(s);
+        // Try D/M/YYYY or DD/MM/YYYY format (e.g., 01/01/2025 9:05)
+        const dateRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+        const match = s.match(dateRegex);
+        
+        if (match) {
+          let day = parseInt(match[1], 10);
+          let month = parseInt(match[2], 10);
+          const year = parseInt(match[3], 10);
+          const hour = match[4] ? parseInt(match[4], 10) : 0;
+          const min = match[5] ? parseInt(match[5], 10) : 0;
+          const sec = match[6] ? parseInt(match[6], 10) : 0;
+          
+          // Auto-detect: if first part > 12, it's DD/MM, otherwise assume MM/DD
+          if (day > 12) {
+            month = month - 1;
+          } else if (month > 12) {
+            [day, month] = [match[2], match[1]];
+            month = parseInt(month, 10) - 1;
+          } else {
+            [day, month] = [match[2], match[1]];
+            month = parseInt(month, 10) - 1;
+          }
+          
+          if (fixTz) {
+            dt = new Date(year, month, day, hour, min, sec);
+            // Debug: log dates on 02/12-02/13
+            if ((day === 12 || day === 13) && month === 1) {
+              console.log(`[parseExcelDate] D/M format "${s}" -> ${day}/${month+1}/${year} ${hour}:${min} (local) -> ${dt.toLocaleString()}`);
+            }
+          } else {
+            dt = new Date(Date.UTC(year, month, day, hour, min, sec));
+          }
+        } else {
+          // Try parsing as string or check for timezone
+          const hasTimezone = s.includes('Z') || s.match(/[+-]\d{2}:\d{2}$/);
+          
+          if (hasTimezone) {
+            dt = new Date(s);
+          } else if (fixTz) {
+            // Try ISO format manually for naive timestamps
+            const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+            if (iso) {
+              dt = new Date(parseInt(iso[1]), parseInt(iso[2]) - 1, parseInt(iso[3]), 
+                           iso[4] ? parseInt(iso[4]) : 0, iso[5] ? parseInt(iso[5]) : 0, 
+                           iso[6] ? parseInt(iso[6]) : 0);
+            } else {
+              dt = new Date(s);
+            }
+          } else {
+            dt = new Date(s + 'Z');
+          }
+        }
       }
     }
   } catch (e) {
     console.warn("Date parse error for value:", v);
     return null;
-  }
-
-  // Apply timezone fix if enabled (add timezone offset to compensate)
-  if (fixTz && dt && !isNaN(dt.getTime())) {
-    const offsetMs = getTimezoneOffsetMs();
-    dt = new Date(dt.getTime() + offsetMs);
   }
 
   return (dt && !isNaN(dt.getTime())) ? dt : null;

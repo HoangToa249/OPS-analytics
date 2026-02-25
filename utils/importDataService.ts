@@ -36,6 +36,9 @@ interface UpsertResult {
  * Apply Option B logic: nullify missing field types
  * If arrival fields present but departure not → set departure = NULL
  * If departure fields present but arrival not → set arrival = NULL
+ * 
+ * CRITICAL: Determine data type by flight number, not status fields
+ * because status fields always get default values.
  */
 function applyOptionBLogic(
   record: any,
@@ -44,15 +47,13 @@ function applyOptionBLogic(
 ): any {
   const result = { ...record };
   
-  // Check if arrival data exists
-  const hasArrivalData = Array.from(arrivalFields).some(
-    field => result[field] !== undefined && result[field] !== null
-  );
+  // Check if arrival data exists - based on arr_flight field
+  // (not status, since status always has default value)
+  const hasArrivalData = result['arr_flight'] !== undefined && result['arr_flight'] !== null;
   
-  // Check if departure data exists
-  const hasDepartureData = Array.from(departureFields).some(
-    field => result[field] !== undefined && result[field] !== null
-  );
+  // Check if departure data exists - based on dep_flight field  
+  // (not status, since status always has default value)
+  const hasDepartureData = result['dep_flight'] !== undefined && result['dep_flight'] !== null;
   
   // Apply Option B: nullify missing types
   if (!hasArrivalData) {
@@ -84,6 +85,44 @@ function extractDate(dateTime: any): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Convert local datetime string to UTC representation for database queries
+ * Input: "2026-02-11T05:00" (local time, e.g., UTC+7 timezone)
+ * Output: "2026-02-10T22:00:00" (UTC equivalent - what gets stored in database)
+ * 
+ * Data in database is stored as UTC equivalent (to avoid +7 hour shift when displaying)
+ * So when querying, we must convert local input to UTC equivalent to match database values
+ */
+function localClockToUTCISOString(s: string | null): string | null {
+  if (!s) return null;
+  const normalized = s.replace(' ', 'T');
+  const re = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+  const m = normalized.match(re);
+  if (!m) return normalized;
+  
+  // Parse input as local time
+  const year = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10) - 1;
+  const day = parseInt(m[3], 10);
+  const hour = parseInt(m[4], 10);
+  const minute = parseInt(m[5], 10);
+  const second = m[6] ? parseInt(m[6], 10) : 0;
+  
+  // Create Date with local constructor (represents the local time)
+  const dt = new Date(year, month, day, hour, minute, second);
+  
+  // Convert to UTC representation (what gets stored in database)
+  const utcYear = dt.getUTCFullYear();
+  const utcMonth = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const utcDay = String(dt.getUTCDate()).padStart(2, '0');
+  const utcHour = String(dt.getUTCHours()).padStart(2, '0');
+  const utcMinute = String(dt.getUTCMinutes()).padStart(2, '0');
+  const utcSecond = String(dt.getUTCSeconds()).padStart(2, '0');
+  
+  // Return in database format with space (not T) for Supabase .or() query
+  return `${utcYear}-${utcMonth}-${utcDay} ${utcHour}:${utcMinute}:${utcSecond}`;
 }
 
 /**
@@ -149,73 +188,40 @@ export function filterBySelectedColumns(
 
 /**
  * Delete records in time range from database
+ * Parameters accept local datetime strings: "2025-01-15T14:30"
+ * These are converted to UTC ISO strings for database queries
  */
 export async function deleteRecordsInTimeRange(
   supabase: SupabaseClient,
   tableName: string,
-  fromDate: Date,
-  toDate: Date
+  fromDateString: string,
+  toDateString: string
 ): Promise<{ success: boolean; deletedCount: number; error?: string }> {
   try {
-    const fromISO = fromDate.toISOString();
-    const toISO = toDate.toISOString();
+    console.log(`[Delete] Time range (local): ${fromDateString} -> ${toDateString}`);
 
-    console.log(`[Delete] Finding records between ${fromISO} and ${toISO}`);
+    // Call RPC function with local times (no timezone conversion needed)
+    const { data, error } = await supabase.rpc('delete_flights_in_range', {
+      p_from_local: fromDateString,
+      p_to_local: toDateString
+    });
 
-    // Find records to delete - where sta or std falls within range
-    // Use two separate queries to avoid complex OR syntax issues
-    const { data: recordsWithSta, error: staError } = await supabase
-      .from(tableName)
-      .select('id')
-      .gte('sta', fromISO)
-      .lte('sta', toISO);
-
-    if (staError) throw staError;
-
-    const { data: recordsWithStd, error: stdError } = await supabase
-      .from(tableName)
-      .select('id')
-      .gte('std', fromISO)
-      .lte('std', toISO);
-
-    if (stdError) throw stdError;
-
-    // Merge and deduplicate
-    const allIds = new Set<string>();
-    recordsWithSta?.forEach(r => allIds.add(r.id));
-    recordsWithStd?.forEach(r => allIds.add(r.id));
-
-    console.log(`[Delete] Found ${allIds.size} records to delete (sta: ${recordsWithSta?.length || 0}, std: ${recordsWithStd?.length || 0})`);
-
-    if (allIds.size === 0) {
-      return { success: true, deletedCount: 0 };
+    if (error) {
+      console.error(`[Delete] RPC error:`, error);
+      throw error;
     }
 
-    const idsToDelete = Array.from(allIds);
-
-    // Delete in batches to avoid hitting request size limit
-    const BATCH_SIZE = 50; // Reduce from 100 to 50 for safety
-    let totalDeleted = 0;
-
-    for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
-      const batch = idsToDelete.slice(i, i + BATCH_SIZE);
-      console.log(`[Delete] Batch ${Math.floor(i / BATCH_SIZE) + 1}: Deleting ${batch.length} records...`);
-      
-      const { error: deleteError } = await supabase
-        .from(tableName)
-        .delete()
-        .in('id', batch);
-
-      if (deleteError) {
-        console.error(`[Delete] Batch error:`, deleteError);
-        throw deleteError;
-      }
-      totalDeleted += batch.length;
-      console.log(`[Delete] Batch complete. Total deleted so far: ${totalDeleted}`);
+    // Check if RPC function returned success
+    if (!data || !data[0]?.success) {
+      const errorMsg = data?.[0]?.error_message || 'Unknown error from delete function';
+      console.error(`[Delete] RPC returned error:`, errorMsg);
+      throw new Error(errorMsg);
     }
 
-    console.log(`[Delete] SUCCESS: Deleted ${totalDeleted} records total`);
-    return { success: true, deletedCount: totalDeleted };
+    const deletedCount = data[0].deleted_count || 0;
+    console.log(`[Delete] SUCCESS: Deleted ${deletedCount} records total`);
+    
+    return { success: true, deletedCount };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[Delete] FAILED:`, errorMsg);
@@ -261,8 +267,17 @@ export async function smartUpsertData(options: UpsertOptions): Promise<UpsertRes
     try {
       let record = { ...data[i] };
       
+      // DEBUG: Log first few records
+      if (i < 3) {
+        console.log(`[Upsert] Record ${i} raw:`, record);
+      }
+      
       // Apply Option B logic
       record = applyOptionBLogic(record, arrivalFields, departureFields);
+      
+      if (i < 3) {
+        console.log(`[Upsert] Record ${i} after Option B:`, record);
+      }
 
       // Skip records outside time range if configured
       if (options.timeRangeFrom && options.timeRangeTo) {
@@ -272,6 +287,10 @@ export async function smartUpsertData(options: UpsertOptions): Promise<UpsertRes
           recordDate = new Date(record[compositeKeyFields.arrivalKey?.dateField || 'sta']);
         } else if (record[compositeKeyFields.departureKey?.dateField || 'std']) {
           recordDate = new Date(record[compositeKeyFields.departureKey?.dateField || 'std']);
+        }
+
+        if (i < 3) {
+          console.log(`[Upsert] Record ${i} date check:`, { recordDate, from: options.timeRangeFrom, to: options.timeRangeTo, inRange: isDateInRange(recordDate, options.timeRangeFrom, options.timeRangeTo) });
         }
 
         if (!isDateInRange(recordDate, options.timeRangeFrom, options.timeRangeTo)) {
@@ -287,17 +306,25 @@ export async function smartUpsertData(options: UpsertOptions): Promise<UpsertRes
         const arrivalDate = extractDate(record[compositeKeyFields.arrivalKey.dateField]);
         
         if (arrivalDate) {
-          const { data: existing } = await supabase
-            .from(tableName)
-            .select('id')
-            .eq(compositeKeyFields.arrivalKey.flightField, record[compositeKeyFields.arrivalKey.flightField])
-            .gte(compositeKeyFields.arrivalKey.dateField, `${arrivalDate}T00:00:00`)
-            .lte(compositeKeyFields.arrivalKey.dateField, `${arrivalDate}T23:59:59`)
-            .limit(1)
-            .single();
+          try {
+            const { data: existing, error: queryError } = await supabase
+              .from(tableName)
+              .select('id, counters')
+              .eq(compositeKeyFields.arrivalKey.flightField, record[compositeKeyFields.arrivalKey.flightField])
+              .gte(compositeKeyFields.arrivalKey.dateField, `${arrivalDate}T00:00:00`)
+              .lte(compositeKeyFields.arrivalKey.dateField, `${arrivalDate}T23:59:59`)
+              .limit(1);
+            
+            if (queryError && queryError.code !== 'PGRST116') {
+              throw queryError;
+            }
 
-          if (existing) {
-            existingRecord = existing;
+            if (existing && existing.length > 0) {
+              existingRecord = existing[0];
+              if (i < 3) console.log(`[Upsert] Record ${i} matched by arrival key`);
+            }
+          } catch (e) {
+            if (i < 3) console.error(`[Upsert] Record ${i} arrival match error:`, e);
           }
         }
       }
@@ -307,17 +334,25 @@ export async function smartUpsertData(options: UpsertOptions): Promise<UpsertRes
         const departureDate = extractDate(record[compositeKeyFields.departureKey.dateField]);
         
         if (departureDate) {
-          const { data: existing } = await supabase
-            .from(tableName)
-            .select('id')
-            .eq(compositeKeyFields.departureKey.flightField, record[compositeKeyFields.departureKey.flightField])
-            .gte(compositeKeyFields.departureKey.dateField, `${departureDate}T00:00:00`)
-            .lte(compositeKeyFields.departureKey.dateField, `${departureDate}T23:59:59`)
-            .limit(1)
-            .single();
+          try {
+            const { data: existing, error: queryError } = await supabase
+              .from(tableName)
+              .select('id, counters')
+              .eq(compositeKeyFields.departureKey.flightField, record[compositeKeyFields.departureKey.flightField])
+              .gte(compositeKeyFields.departureKey.dateField, `${departureDate}T00:00:00`)
+              .lte(compositeKeyFields.departureKey.dateField, `${departureDate}T23:59:59`)
+              .limit(1);
+            
+            if (queryError && queryError.code !== 'PGRST116') {
+              throw queryError;
+            }
 
-          if (existing) {
-            existingRecord = existing;
+            if (existing && existing.length > 0) {
+              existingRecord = existing[0];
+              if (i < 3) console.log(`[Upsert] Record ${i} matched by departure key`);
+            }
+          } catch (e) {
+            if (i < 3) console.error(`[Upsert] Record ${i} departure match error:`, e);
           }
         }
       }
@@ -333,6 +368,17 @@ export async function smartUpsertData(options: UpsertOptions): Promise<UpsertRes
         let updateData = record;
         if (options.selectedColumns && options.selectedColumns.length > 0) {
           updateData = filterBySelectedColumns(record, options.selectedColumns);
+        }
+
+        // If incoming counters exist but existing record has NULL counters,
+        // include counters in the update so we don't leave them NULL.
+        try {
+          const existingCounters = existingRecord && (existingRecord as any).counters;
+          if ((record.counters !== undefined && record.counters !== null) && (existingCounters === undefined || existingCounters === null)) {
+            updateData = { ...updateData, counters: record.counters };
+          }
+        } catch (e) {
+          // ignore and proceed with updateData as-is
         }
 
         // Update existing record
@@ -354,6 +400,10 @@ export async function smartUpsertData(options: UpsertOptions): Promise<UpsertRes
           continue; // Skip inserts in update-only mode
         }
 
+        if (i < 3) {
+          console.log(`[Upsert] Record ${i} - no existing record, inserting...`);
+        }
+
         // Insert new record
         const { error } = await supabase
           .from(tableName)
@@ -365,6 +415,9 @@ export async function smartUpsertData(options: UpsertOptions): Promise<UpsertRes
           errors.push({ index: i, error: error.message });
         } else {
           insertedRecords++;
+          if (i < 3) {
+            console.log(`[Upsert] Record ${i} inserted successfully`);
+          }
         }
       }
     } catch (error) {

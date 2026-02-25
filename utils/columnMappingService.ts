@@ -261,6 +261,7 @@ export function autoDetectMapping(
 
 /**
  * Validate mapped data before upload
+ * IMPORTANT: This must match the validation logic in parseExcelRows()
  */
 export function validateMappedData(
   rowData: any[],
@@ -301,31 +302,79 @@ export function validateMappedData(
     };
   }
 
-  // Validate each row
+  // Validate each row - match parseExcelRows() logic
   for (let i = 1; i < rowData.length; i++) {
     const row = rowData[i];
     let hasError = false;
+    let skipReason = '';
 
-    // Check required fields have values
-    requiredFields.forEach(field => {
-      const colIdx = mapping[field];
-      if (colIdx >= 0 && (!row[colIdx] || String(row[colIdx]).trim() === '')) {
+    // Get flight numbers and times
+    const arrFlt = mapping['arrFlt'] !== -1 && mapping['arrFlt'] !== undefined 
+      ? String(row[mapping['arrFlt']] || '').trim() 
+      : '';
+    const depFlt = mapping['depFlt'] !== -1 && mapping['depFlt'] !== undefined 
+      ? String(row[mapping['depFlt']] || '').trim() 
+      : '';
+    
+    // For backwards compatibility: check 'flight' field if 'depFlt' not mapped
+    const flightNum = depFlt || (mapping['flight'] !== -1 && mapping['flight'] !== undefined 
+      ? String(row[mapping['flight']] || '').trim() 
+      : '');
+
+    // Check if either arrival or departure flight exists
+    if (!arrFlt && !flightNum) {
+      hasError = true;
+      skipReason = 'no flight number';
+    }
+
+    // Check for cancelled status
+    if (!hasError) {
+      const depStatus = mapping['depSts'] !== -1 && mapping['depSts'] !== undefined 
+        ? String(row[mapping['depSts']] || '').toUpperCase() 
+        : '';
+      const arrStatus = mapping['arrSts'] !== -1 && mapping['arrSts'] !== undefined 
+        ? String(row[mapping['arrSts']] || '').toUpperCase() 
+        : '';
+      
+      if (depStatus.includes('CX') || depStatus.includes('CNL') || 
+          arrStatus.includes('CX') || arrStatus.includes('CNL')) {
         hasError = true;
+        skipReason = 'cancelled flight (CX/CNL)';
       }
-    });
+    }
+
+    // Check for at least one valid time (sta or std)
+    if (!hasError) {
+      const staCol = mapping['sta'] !== -1 && mapping['sta'] !== undefined ? mapping['sta'] : -1;
+      const stdCol = mapping['std'] !== -1 && mapping['std'] !== undefined ? mapping['std'] : -1;
+      
+      const sta = staCol >= 0 ? row[staCol] : null;
+      const std = stdCol >= 0 ? row[stdCol] : null;
+      
+      if (!sta && !std) {
+        hasError = true;
+        skipReason = 'missing both STA and STD times';
+      }
+    }
 
     if (hasError) {
       invalidRows++;
+      if (skipReason && !warnings.some(w => w.includes(skipReason))) {
+        // Add warning for first occurrence of this skip reason
+        if (invalidRows <= 10) { // Only show first few skip reasons
+          warnings.push(`Row ${i}: ${skipReason}`);
+        }
+      }
     } else {
       validRows++;
     }
   }
 
   if (validRows === 0) {
-    errors.push('No valid rows found with required fields filled');
+    errors.push('No valid rows found. Check: flight numbers, times, and cancelled status');
   } else if (invalidRows > 0) {
     warnings.push(
-      `${invalidRows} rows have missing required fields and will be skipped`
+      `${invalidRows} rows will be skipped due to: missing flight/time, cancelled status, etc.`
     );
   }
 

@@ -223,8 +223,8 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       if (!standArrMap.has(flight.arrStand)) standArrMap.set(flight.arrStand, []);
       standArrMap.get(flight.arrStand)!.push(flight);
 
-      let standStart: Date | null = null;
-      let standEnd: Date | null = null;
+      let standStart: Date | null | undefined = null;
+      let standEnd: Date | null | undefined = null;
       
       // Check if this is a paired flight (arrStand === depStand and both std and sta exist)
       const isPaired = flight.arrStand === flight.depStand && flight.std;
@@ -307,8 +307,8 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
         const flight2 = standFlights[j];
         
         // Get occupancy times for flight1
-        let flight1Start: Date | null = null;
-        let flight1End: Date | null = null;
+        let flight1Start: Date | null | undefined = null;
+        let flight1End: Date | null | undefined = null;
         if (flight1.arrStand === standId) {
           const isPaired = flight1.arrStand === flight1.depStand && flight1.std;
           flight1Start = flight1.sta || flight1.ata;
@@ -319,8 +319,8 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
         }
         
         // Get occupancy times for flight2
-        let flight2Start: Date | null = null;
-        let flight2End: Date | null = null;
+        let flight2Start: Date | null | undefined = null;
+        let flight2End: Date | null | undefined = null;
         if (flight2.arrStand === standId) {
           const isPaired = flight2.arrStand === flight2.depStand && flight2.std;
           flight2Start = flight2.sta || flight2.ata;
@@ -404,8 +404,8 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
     // Calculate utilization using merge intervals to avoid double-count
     const intervals = allFlights.map(f => {
       const isPaired = f.arrStand === f.depStand && f.std;
-      let start: Date | null = null;
-      let end: Date | null = null;
+      let start: Date | null | undefined = null;
+      let end: Date | null | undefined = null;
       
       if (f.arrStand === standId) {
         // Arrival stand occupancy
@@ -441,7 +441,7 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       const flight2 = sortedFlights[i + 1];
       
       // End time of flight 1 at this stand
-      let flight1End: Date | null = null;
+      let flight1End: Date | null | undefined = null;
       if (flight1.arrStand === standId) {
         flight1End = flight1.atd || flight1.std;
       } else if (flight1.depStand === standId) {
@@ -449,7 +449,7 @@ export function calculateInfrastructureMetrics(flights: Flight[], dateStart: Dat
       }
       
       // Start time of flight 2 at this stand
-      let flight2Start: Date | null = null;
+      let flight2Start: Date | null | undefined = null;
       if (flight2.arrStand === standId) {
         flight2Start = flight2.sta || flight2.ata;
       } else if (flight2.depStand === standId) {

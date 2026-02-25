@@ -7,14 +7,16 @@ import React from 'react';
 import { CheckCircle, AlertCircle, Loader } from 'lucide-react';
 
 interface ImportProgressModalProps {
-  isOpen: boolean;
-  isLoading: boolean;
+  isOpen?: boolean;
+  show?: boolean;
+  isLoading?: boolean;
   progress?: {
-    processed: number;
-    total: number;
-    inserted: number;
-    updated: number;
-    failed: number;
+    processed?: number;
+    total?: number;
+    inserted?: number;
+    updated?: number;
+    deleted?: number;
+    failed?: number;
   };
   status?: 'processing' | 'success' | 'error';
   message?: string;
@@ -23,13 +25,15 @@ interface ImportProgressModalProps {
 
 export const ImportProgressModal: React.FC<ImportProgressModalProps> = ({
   isOpen,
-  isLoading,
+  show,
+  isLoading = true,
   progress,
   status = 'processing',
   message,
   onClose,
 }) => {
-  if (!isOpen) return null;
+  const modalOpen = show !== undefined ? show : isOpen;
+  if (!modalOpen) return null;
 
   const progressPercent = progress
     ? Math.round((progress.processed / progress.total) * 100)
@@ -46,37 +50,37 @@ export const ImportProgressModal: React.FC<ImportProgressModalProps> = ({
         {/* Content */}
         <div className="p-6 space-y-6">
           {/* Status Icon & Message */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-start gap-4">
             {status === 'processing' && (
               <>
-                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center animate-spin">
+                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center animate-spin flex-shrink-0">
                   <Loader className="w-6 h-6 text-blue-600" />
                 </div>
-                <div>
+                <div className="flex-1">
                   <p className="font-semibold text-slate-900">Processing...</p>
-                  <p className="text-sm text-slate-600">{message || 'Uploading and processing your data'}</p>
+                  <p className="text-sm text-slate-600 whitespace-pre-wrap">{message || 'Uploading and processing your data'}</p>
                 </div>
               </>
             )}
             {status === 'success' && (
               <>
-                <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+                <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
                   <CheckCircle className="w-6 h-6 text-green-600" />
                 </div>
-                <div>
+                <div className="flex-1">
                   <p className="font-semibold text-green-900">Import Complete!</p>
-                  <p className="text-sm text-green-700">{message || 'Data imported successfully'}</p>
+                  <p className="text-sm text-green-700 whitespace-pre-wrap">{message || 'Data imported successfully'}</p>
                 </div>
               </>
             )}
             {status === 'error' && (
               <>
-                <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center flex-shrink-0">
                   <AlertCircle className="w-6 h-6 text-red-600" />
                 </div>
-                <div>
+                <div className="flex-1">
                   <p className="font-semibold text-red-900">Import Failed</p>
-                  <p className="text-sm text-red-700">{message || 'An error occurred during import'}</p>
+                  <p className="text-sm text-red-700 whitespace-pre-wrap">{message || 'An error occurred during import'}</p>
                 </div>
               </>
             )}
@@ -103,21 +107,22 @@ export const ImportProgressModal: React.FC<ImportProgressModalProps> = ({
                 <div className="bg-blue-50 rounded-lg p-3">
                   <p className="text-xs text-slate-600 font-medium uppercase">Processed</p>
                   <p className="text-2xl font-bold text-blue-600">
-                    {progress.processed}/{progress.total}
+                    {progress.processed || 0}/{progress.total || 0}
                   </p>
                 </div>
                 <div className="bg-purple-50 rounded-lg p-3">
                   <p className="text-xs text-slate-600 font-medium uppercase">Status</p>
-                  <p className="text-sm font-semibold text-purple-600">
-                    📥 {progress.inserted} new
-                  </p>
-                  <p className="text-sm font-semibold text-purple-600">
-                    ✏️ {progress.updated} updated
-                  </p>
+                  {(progress.inserted || progress.updated || progress.deleted) && (
+                    <>
+                      {progress.inserted ? (<p className="text-sm font-semibold text-purple-600">📥 {progress.inserted} new</p>) : null}
+                      {progress.updated ? (<p className="text-sm font-semibold text-purple-600">✏️ {progress.updated} updated</p>) : null}
+                      {progress.deleted ? (<p className="text-sm font-semibold text-red-600">🗑️ {progress.deleted} deleted</p>) : null}
+                    </>
+                  )}
                 </div>
               </div>
 
-              {progress.failed > 0 && (
+              {(progress.failed || 0) > 0 && (
                 <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
                   <p className="text-sm font-semibold text-amber-800">
                     ⚠️ {progress.failed} records failed to process
@@ -129,18 +134,28 @@ export const ImportProgressModal: React.FC<ImportProgressModalProps> = ({
 
           {/* Statistics - Success */}
           {!isLoading && status === 'success' && progress && (
-            <div className="grid grid-cols-3 gap-2">
-              <div className="bg-green-50 rounded-lg p-3 text-center">
-                <p className="text-2xl font-bold text-green-600">{progress.inserted}</p>
-                <p className="text-xs text-slate-600 font-medium">Inserted</p>
-              </div>
-              <div className="bg-blue-50 rounded-lg p-3 text-center">
-                <p className="text-2xl font-bold text-blue-600">{progress.updated}</p>
-                <p className="text-xs text-slate-600 font-medium">Updated</p>
-              </div>
-              <div className={`rounded-lg p-3 text-center ${progress.failed > 0 ? 'bg-red-50' : 'bg-slate-50'}`}>
-                <p className={`text-2xl font-bold ${progress.failed > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                  {progress.failed}
+            <div className="grid grid-cols-4 gap-2">
+              {progress.inserted ? (
+                <div className="bg-green-50 rounded-lg p-3 text-center">
+                  <p className="text-2xl font-bold text-green-600">{progress.inserted}</p>
+                  <p className="text-xs text-slate-600 font-medium">Inserted</p>
+                </div>
+              ) : null}
+              {progress.updated ? (
+                <div className="bg-blue-50 rounded-lg p-3 text-center">
+                  <p className="text-2xl font-bold text-blue-600">{progress.updated}</p>
+                  <p className="text-xs text-slate-600 font-medium">Updated</p>
+                </div>
+              ) : null}
+              {progress.deleted ? (
+                <div className="bg-red-50 rounded-lg p-3 text-center">
+                  <p className="text-2xl font-bold text-red-600">{progress.deleted}</p>
+                  <p className="text-xs text-slate-600 font-medium">Deleted</p>
+                </div>
+              ) : null}
+              <div className={`rounded-lg p-3 text-center ${(progress.failed || 0) > 0 ? 'bg-red-50' : 'bg-slate-50'}`}>
+                <p className={`text-2xl font-bold ${(progress.failed || 0) > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                  {progress.failed || 0}
                 </p>
                 <p className="text-xs text-slate-600 font-medium">Failed</p>
               </div>

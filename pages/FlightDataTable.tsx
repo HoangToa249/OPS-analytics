@@ -7,15 +7,13 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Home,
-  Download,
-  FileSpreadsheet,
   Loader2,
   ChevronLeft,
   ChevronRight,
   AlertCircle,
+  Search,
 } from 'lucide-react';
-import { FlightTableFilter } from '../components/FlightTableFilter';
-import { ColumnToggle } from '../components/ColumnToggle';
+import { FilterSidebar } from '../components/FilterSidebar';
 import {
   fetchFlightData,
   FlightDataFilter,
@@ -55,6 +53,7 @@ const FlightDataTable: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Load data when filters or page changes
   useEffect(() => {
@@ -159,170 +158,164 @@ const FlightDataTable: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
-      {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 mb-2">Flight Data Table</h1>
-          <p className="text-slate-600">View, filter, and export flight data from database</p>
-        </div>
-        <button
-          onClick={() => navigate('/')}
-          className="flex items-center gap-2 px-4 py-2 bg-white text-slate-700 rounded-lg border border-slate-300 hover:bg-slate-50 transition-colors font-medium"
-        >
-          <Home size={18} />
-          Back to Home
-        </button>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex">
+      {/* Filter Sidebar */}
+      <FilterSidebar
+        filters={filters}
+        onFiltersChange={setFilters}
+        isLoading={isLoading}
+        isOpen={sidebarOpen}
+        onToggle={setSidebarOpen}
+        searchInput={filters.searchTerm || ''}
+        onSearchChange={(value) => setFilters((prev) => ({ ...prev, searchTerm: value }))}
+        availableColumns={allAvailableColumns}
+        selectedColumns={selectedColumns}
+        onColumnsChange={setSelectedColumns}
+        isExporting={isExporting}
+        onExportExcel={() => handleExport('excel')}
+        onExportCSV={() => handleExport('csv')}
+      />
 
-      {/* Error Alert */}
-      {error && (
-        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
-          <AlertCircle size={20} className="text-red-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <h3 className="font-semibold text-red-900">Error</h3>
-            <p className="text-red-700 text-sm">{error}</p>
+      {/* Main Content */}
+      <div
+        className={`flex-1 transition-all duration-300 flex flex-col ${sidebarOpen ? 'ml-64' : 'ml-16'}`}
+      >
+        {/* Header */}
+        <div className="border-b border-slate-200 bg-white sticky top-0 z-30">
+          <div className="px-4 py-4 flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900">Flight Data Table</h1>
+              <p className="text-slate-500 text-sm">View, filter, and export flight schedule data</p>
+            </div>
+            <button
+              onClick={() => navigate('/')}
+              className="flex items-center gap-2 px-4 py-2 bg-white text-slate-700 rounded-lg border border-slate-300 hover:bg-slate-50 transition-colors font-medium"
+            >
+              <Home size={18} />
+              Back to Home
+            </button>
           </div>
         </div>
-      )}
 
-      {/* Filters */}
-      <div className="mb-6">
-        <FlightTableFilter 
-          filters={filters} 
-          onFiltersChange={setFilters} 
-          isLoading={isLoading}
-          selectedColumns={selectedColumns}
-        />
-      </div>
+        <div className="flex-1 px-4 py-4 space-y-3 overflow-hidden flex flex-col">
+          {/* Error Alert */}
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3 text-sm">
+              <AlertCircle size={18} className="text-red-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-red-900">Error</h3>
+                <p className="text-red-700 text-xs">{error}</p>
+              </div>
+            </div>
+          )}
 
-      {/* Controls */}
-      <div className="mb-6 flex flex-wrap gap-3">
-        <ColumnToggle
-          availableColumns={allAvailableColumns}
-          selectedColumns={selectedColumns}
-          onColumnsChange={setSelectedColumns}
-        />
+          {/* Data Info */}
+          <div className="flex items-center justify-between text-xs text-slate-600 px-2 bg-slate-50 py-2 rounded-lg border border-slate-200">
+            <div className="flex gap-4">
+              <div>
+                <span className="font-semibold">{flightData.total}</span> chuyến bay
+              </div>
+              <div>
+                Hiển thị <span className="font-semibold">{flightData.data.length > 0 ? (currentPage - 1) * PAGE_SIZE + 1 : 0}</span>-
+                <span className="font-semibold">
+                  {Math.min(currentPage * PAGE_SIZE, flightData.total)}
+                </span>
+              </div>
+            </div>
 
-        <div className="flex gap-2 ml-auto">
-          <button
-            onClick={() => handleExport('excel')}
-            disabled={isLoading || isExporting || flightData.data.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-slate-400 transition-colors font-medium"
-          >
-            {isExporting ? (
-              <Loader2 size={18} className="animate-spin" />
+            <div>
+              <span className="font-semibold">{displayColumns.length}</span> cột
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden flex-1 flex flex-col">
+            {isLoading && flightData.data.length === 0 ? (
+              <div className="flex items-center justify-center flex-1">
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 size={28} className="animate-spin text-blue-500" />
+                  <p className="text-sm text-slate-600">Đang tải dữ liệu...</p>
+                </div>
+              </div>
+            ) : flightData.data.length === 0 ? (
+              <div className="flex items-center justify-center flex-1">
+                <div className="text-center">
+                  <Search size={32} className="mx-auto text-slate-300 mb-2" />
+                  <p className="text-slate-500">Không tìm thấy dữ liệu. Hãy thay đổi các bộ lọc.</p>
+                </div>
+              </div>
             ) : (
-              <Download size={18} />
-            )}
-            Export Excel
-          </button>
-
-          <button
-            onClick={() => handleExport('csv')}
-            disabled={isLoading || isExporting || flightData.data.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-400 transition-colors font-medium"
-          >
-            {isExporting ? (
-              <Loader2 size={18} className="animate-spin" />
-            ) : (
-              <FileSpreadsheet size={18} />
-            )}
-            Export CSV
-          </button>
-        </div>
-      </div>
-
-      {/* Data Info */}
-      <div className="mb-4 flex items-center justify-between">
-        <div className="text-sm text-slate-600">
-          Showing <span className="font-semibold">{(currentPage - 1) * PAGE_SIZE + 1}</span> to{' '}
-          <span className="font-semibold">
-            {Math.min(currentPage * PAGE_SIZE, flightData.total)}
-          </span>{' '}
-          of <span className="font-semibold">{flightData.total}</span> flights
-        </div>
-
-        <div className="text-sm text-slate-600">
-          <span className="font-semibold">{displayColumns.length}</span> columns selected
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-        {isLoading && flightData.data.length === 0 ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 size={32} className="animate-spin text-slate-400" />
-          </div>
-        ) : flightData.data.length === 0 ? (
-          <div className="flex items-center justify-center h-64">
-            <p className="text-slate-500 text-lg">No data found</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  {displayColumns.map((column) => (
-                    <th
-                      key={column}
-                      className="px-6 py-3 text-left font-semibold text-slate-700 bg-slate-50 whitespace-nowrap"
-                    >
-                      {column}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {flightData.data.map((row, idx) => (
-                  <tr
-                    key={idx}
-                    className="border-b border-slate-200 hover:bg-slate-50 transition-colors"
-                  >
-                    {displayColumns.map((column) => (
-                      <td key={`${idx}-${column}`} className="px-6 py-3 text-slate-700">
-                        {formatCellValue(row[column])}
-                      </td>
+              <div className="overflow-x-auto flex-1">
+                <table className="w-full text-xs border-collapse">
+                  <thead className="sticky top-0 bg-gradient-to-r from-slate-100 to-slate-50 border-b border-slate-300">
+                    <tr>
+                      {displayColumns.map((column) => (
+                        <th
+                          key={column}
+                          className="px-4 py-3 text-left font-semibold text-slate-700 whitespace-nowrap bg-slate-50 text-xs border-r border-slate-200 last:border-r-0"
+                        >
+                          {column.replace(/_/g, ' ').toUpperCase()}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {flightData.data.map((row, idx) => (
+                      <tr
+                        key={idx}
+                        className={`transition-colors ${
+                          idx % 2 === 0 ? 'hover:bg-blue-50' : 'bg-slate-50/50 hover:bg-blue-50'
+                        }`}
+                      >
+                        {displayColumns.map((column) => (
+                          <td
+                            key={`${idx}-${column}`}
+                            className="px-4 py-2.5 text-slate-700 whitespace-nowrap overflow-hidden text-ellipsis border-r border-slate-200 last:border-r-0"
+                            title={String(row[column])}
+                          >
+                            {formatCellValue(row[column])}
+                          </td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Pagination */}
-      {flightData.total > PAGE_SIZE && (
-        <div className="mt-6 flex items-center justify-between">
-          <div className="text-sm text-slate-600">
-            Page <span className="font-semibold">{currentPage}</span> of{' '}
-            <span className="font-semibold">{Math.ceil(flightData.total / PAGE_SIZE)}</span>
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
-          <div className="flex gap-2">
-            <button
-              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-              disabled={currentPage === 1 || isLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 transition-colors"
-            >
-              <ChevronLeft size={18} />
-              Previous
-            </button>
+          {/* Pagination */}
+          {flightData.total > PAGE_SIZE && (
+            <div className="flex items-center justify-between text-xs px-2 py-3 bg-slate-50 rounded-lg border border-slate-200">
+              <div className="text-slate-600">
+                Trang <span className="font-bold text-slate-900">{currentPage}</span> / <span className="font-bold text-slate-900">{Math.ceil(flightData.total / PAGE_SIZE)}</span>
+              </div>
 
-            <button
-              onClick={() =>
-                setCurrentPage(Math.min(Math.ceil(flightData.total / PAGE_SIZE), currentPage + 1))
-              }
-              disabled={!flightData.hasMore || isLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 transition-colors"
-            >
-              Next
-              <ChevronRight size={18} />
-            </button>
-          </div>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                  disabled={currentPage === 1 || isLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-100 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed transition-colors text-xs font-medium"
+                >
+                  <ChevronLeft size={14} />
+                  Trước
+                </button>
+
+                <button
+                  onClick={() =>
+                    setCurrentPage(Math.min(Math.ceil(flightData.total / PAGE_SIZE), currentPage + 1))
+                  }
+                  disabled={!flightData.hasMore || isLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-100 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed transition-colors text-xs font-medium"
+                >
+                  Tiếp theo
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 };

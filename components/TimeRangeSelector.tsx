@@ -184,8 +184,8 @@ export default function TimeRangeSelector({
       {showFromPicker && (
         <DateTimePickerModal
           isOpen={showFromPicker}
-          initialDate={fromDate ? fromDate.toISOString().split('T')[0] : ''}
-          initialTime={fromDate ? fromDate.toTimeString().slice(0, 5) : ''}
+          initialDate={fromDate ? `${fromDate.getFullYear()}-${String(fromDate.getMonth() + 1).padStart(2, '0')}-${String(fromDate.getDate()).padStart(2, '0')}` : ''}
+          initialTime={fromDate ? `${String(fromDate.getHours()).padStart(2, '0')}:${String(fromDate.getMinutes()).padStart(2, '0')}` : ''}
           mode="datetime"
           title="Select From Date & Time"
           onConfirm={(dateStr) => {
@@ -193,6 +193,8 @@ export default function TimeRangeSelector({
             const [dateTime, timeOnly] = dateStr.split('T');
             const [year, month, day] = dateTime.split('-');
             const [hours, minutes] = (timeOnly || '00:00').split(':');
+            // Use LOCAL date constructor (not UTC) so time stays as-is
+            // This keeps the value user selected without timezone conversion
             const newDate = new Date(
               parseInt(year),
               parseInt(month) - 1,
@@ -210,8 +212,8 @@ export default function TimeRangeSelector({
       {showToPicker && (
         <DateTimePickerModal
           isOpen={showToPicker}
-          initialDate={toDate ? toDate.toISOString().split('T')[0] : ''}
-          initialTime={toDate ? toDate.toTimeString().slice(0, 5) : ''}
+          initialDate={toDate ? `${toDate.getFullYear()}-${String(toDate.getMonth() + 1).padStart(2, '0')}-${String(toDate.getDate()).padStart(2, '0')}` : ''}
+          initialTime={toDate ? `${String(toDate.getHours()).padStart(2, '0')}:${String(toDate.getMinutes()).padStart(2, '0')}` : ''}
           mode="datetime"
           title="Select To Date & Time"
           onConfirm={(dateStr) => {
@@ -219,6 +221,8 @@ export default function TimeRangeSelector({
             const [dateTime, timeOnly] = dateStr.split('T');
             const [year, month, day] = dateTime.split('-');
             const [hours, minutes] = (timeOnly || '00:00').split(':');
+            // Use LOCAL date constructor (not UTC) so time stays as-is
+            // This keeps the value user selected without timezone conversion
             const newDate = new Date(
               parseInt(year),
               parseInt(month) - 1,

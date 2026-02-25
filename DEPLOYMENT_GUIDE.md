@@ -69,9 +69,7 @@ EOF
 npm run dev
 
 # Truy cập http://localhost:5173
-# Nếu không có lỗi trong console, kết nối OK
-```
-
+# Nếu không có lỗi trong console, k
 ---
 
 ## 🗄️ Bước 3: Khởi Tạo Database Schema
